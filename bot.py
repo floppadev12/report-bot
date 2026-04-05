@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import html as html_lib
 import datetime
 from zoneinfo import ZoneInfo
@@ -43,15 +44,6 @@ def init_db():
         );
         """)
 
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS daily_snapshots (
-            universe_id BIGINT NOT NULL,
-            snapshot_date DATE NOT NULL,
-            visits BIGINT NOT NULL,
-            PRIMARY KEY (universe_id, snapshot_date)
-        );
-        """)
-
 
 def load_games():
     with get_conn().cursor() as cur:
@@ -87,28 +79,6 @@ def add_game_to_db(universe_id: int, game_link: str, robux_per_visit: float):
 def remove_game_by_universe_id(universe_id: int):
     with get_conn().cursor() as cur:
         cur.execute("DELETE FROM games WHERE universe_id = %s", (universe_id,))
-        cur.execute("DELETE FROM daily_snapshots WHERE universe_id = %s", (universe_id,))
-
-
-def save_snapshot(universe_id: int, snapshot_date: datetime.date, visits: int):
-    with get_conn().cursor() as cur:
-        cur.execute("""
-            INSERT INTO daily_snapshots (universe_id, snapshot_date, visits)
-            VALUES (%s, %s, %s)
-            ON CONFLICT (universe_id, snapshot_date)
-            DO UPDATE SET visits = EXCLUDED.visits
-        """, (universe_id, snapshot_date, visits))
-
-
-def get_snapshot(universe_id: int, snapshot_date: datetime.date):
-    with get_conn().cursor() as cur:
-        cur.execute("""
-            SELECT visits
-            FROM daily_snapshots
-            WHERE universe_id = %s AND snapshot_date = %s
-        """, (universe_id, snapshot_date))
-        row = cur.fetchone()
-    return int(row[0]) if row else None
 
 
 # ---------------- HELPERS ----------------
@@ -139,11 +109,107 @@ def now_local():
     return datetime.datetime.now(ZoneInfo(TIMEZONE))
 
 
-def format_robux_whole(value: float) -> str:
-    return f"{int(round(value)):,}"
+def date_to_labels(d: datetime.date):
+    # tries both possible formats commonly used in chart labels
+    return {
+        d.strftime("%b %-d") if os.name != "nt" else d.strftime("%b %#d"),
+        d.strftime("%d %b"),
+        d.strftime("%b %d").replace(" 0", " "),
+        d.strftime("%Y-%m-%d"),
+    }
 
 
-async def fetch_rorizz(session: aiohttp.ClientSession, universe_id: int):
+def normalize_chart_date(label: str):
+    return re.sub(r"\s+", " ", label.strip())
+
+
+def find_day_value_in_series(points, target_date: datetime.date):
+    wanted = {normalize_chart_date(x) for x in date_to_labels(target_date)}
+
+    for point in points:
+        if not isinstance(point, dict):
+            continue
+
+        raw_label = None
+        raw_value = None
+
+        for key in ("label", "date", "x", "day", "name"):
+            if key in point and point[key] is not None:
+                raw_label = str(point[key])
+                break
+
+        for key in ("value", "y", "visits", "count"):
+            if key in point and point[key] is not None:
+                raw_value = point[key]
+                break
+
+        if raw_label is None or raw_value is None:
+            continue
+
+        if normalize_chart_date(raw_label) in wanted:
+            try:
+                return int(float(raw_value))
+            except Exception:
+                continue
+
+    return None
+
+
+def extract_json_objects_from_html(page_html: str):
+    candidates = []
+
+    patterns = [
+        r'<script[^>]*type="application/json"[^>]*>(.*?)</script>',
+        r'__NEXT_DATA__"\s*type="application/json"[^>]*>(.*?)</script>',
+        r'window\.__NEXT_DATA__\s*=\s*(\{.*?\});',
+        r'window\.__NUXT__\s*=\s*(\{.*?\});',
+        r'__NEXT_DATA__\s*=\s*(\{.*?\});',
+    ]
+
+    for pattern in patterns:
+        for match in re.finditer(pattern, page_html, re.IGNORECASE | re.DOTALL):
+            raw = match.group(1).strip()
+            if not raw:
+                continue
+            candidates.append(raw)
+
+    return candidates
+
+
+def deep_find_visits_series(obj):
+    """
+    Best-effort recursive finder for Visits (30d) chart-like data.
+    Returns a list of dict points if found.
+    """
+    if isinstance(obj, dict):
+        # direct chart-shaped objects
+        text_blob = " ".join(str(v) for v in obj.values() if isinstance(v, (str, int, float)))
+        keys_blob = " ".join(obj.keys()).lower()
+        combined = f"{keys_blob} {text_blob}".lower()
+
+        possible_points_keys = ["data", "points", "series", "datasets", "values"]
+
+        if "visit" in combined:
+            for key in possible_points_keys:
+                value = obj.get(key)
+                if isinstance(value, list) and value and all(isinstance(x, dict) for x in value):
+                    return value
+
+        for value in obj.values():
+            found = deep_find_visits_series(value)
+            if found:
+                return found
+
+    elif isinstance(obj, list):
+        for item in obj:
+            found = deep_find_visits_series(item)
+            if found:
+                return found
+
+    return None
+
+
+async def fetch_rorizz_page(session: aiohttp.ClientSession, universe_id: int):
     url = f"https://rorizz.com/g/{universe_id}"
 
     headers = {
@@ -155,89 +221,120 @@ async def fetch_rorizz(session: aiohttp.ClientSession, universe_id: int):
         "Accept-Language": "en-US,en;q=0.9",
     }
 
-    try:
-        async with session.get(
-            url,
-            headers=headers,
-            timeout=aiohttp.ClientTimeout(total=25),
-            allow_redirects=True,
-        ) as resp:
-            if resp.status != 200:
-                print(f"RoRizz failed for {universe_id}: HTTP {resp.status}")
-                return None
+    async with session.get(
+        url,
+        headers=headers,
+        timeout=aiohttp.ClientTimeout(total=25),
+        allow_redirects=True,
+    ) as resp:
+        if resp.status != 200:
+            raise RuntimeError(f"HTTP {resp.status}")
 
-            page_html = await resp.text()
+        page_html = await resp.text()
 
-        title_match = re.search(r"<title>(.*?)</title>", page_html, re.IGNORECASE | re.DOTALL)
-        title = title_match.group(1).strip() if title_match else f"Game {universe_id}"
-        title = re.sub(r"\s*[-—]\s*RoRizz\s*$", "", title).strip()
-        title = html_lib.unescape(title)
+    title_match = re.search(r"<title>(.*?)</title>", page_html, re.IGNORECASE | re.DOTALL)
+    title = title_match.group(1).strip() if title_match else f"Game {universe_id}"
+    title = re.sub(r"\s*[-—]\s*RoRizz\s*$", "", title).strip()
+    title = html_lib.unescape(title)
 
-        clean_text = re.sub(r"<script.*?</script>", " ", page_html, flags=re.IGNORECASE | re.DOTALL)
-        clean_text = re.sub(r"<style.*?</style>", " ", clean_text, flags=re.IGNORECASE | re.DOTALL)
-        clean_text = re.sub(r"<[^>]+>", " ", clean_text)
-        clean_text = html_lib.unescape(clean_text)
-        clean_text = re.sub(r"\s+", " ", clean_text).strip()
+    clean_text = re.sub(r"<script.*?</script>", " ", page_html, flags=re.IGNORECASE | re.DOTALL)
+    clean_text = re.sub(r"<style.*?</style>", " ", clean_text, flags=re.IGNORECASE | re.DOTALL)
+    clean_text = re.sub(r"<[^>]+>", " ", clean_text)
+    clean_text = html_lib.unescape(clean_text)
+    clean_text = re.sub(r"\s+", " ", clean_text).strip()
 
-        def extract_stat(label: str):
-            pattern = rf"(\d[\d,]*(?:\.\d+)?[KMBkmb]?)\s+{re.escape(label)}\b"
-            match = re.search(pattern, clean_text, re.IGNORECASE)
-            if not match:
-                return None
-            return parse_compact_number(match.group(1))
+    return {
+        "title": title,
+        "html": page_html,
+        "text": clean_text,
+    }
 
-        visits = extract_stat("Visits")
-        playing = extract_stat("Playing")
 
-        if visits is None:
-            m = re.search(r'"visits"\s*:\s*(\d+)', page_html, re.IGNORECASE)
-            if m:
-                visits = int(m.group(1))
-
-        if playing is None:
-            m = re.search(r'"playing"\s*:\s*(\d+)', page_html, re.IGNORECASE)
-            if m:
-                playing = int(m.group(1))
-
-        if visits is None:
-            visits = 0
-        if playing is None:
-            playing = 0
-
-        if visits == 0 and playing == 0:
-            print(f"RoRizz returned page but no usable stats for {universe_id}")
+def extract_current_stats(clean_text: str, page_html: str):
+    def extract_stat(label: str):
+        pattern = rf"(\d[\d,]*(?:\.\d+)?[KMBkmb]?)\s+{re.escape(label)}\b"
+        match = re.search(pattern, clean_text, re.IGNORECASE)
+        if not match:
             return None
+        return parse_compact_number(match.group(1))
+
+    visits = extract_stat("Visits")
+    playing = extract_stat("Playing")
+
+    if visits is None:
+        m = re.search(r'"visits"\s*:\s*(\d+)', page_html, re.IGNORECASE)
+        if m:
+            visits = int(m.group(1))
+
+    if playing is None:
+        m = re.search(r'"playing"\s*:\s*(\d+)', page_html, re.IGNORECASE)
+        if m:
+            playing = int(m.group(1))
+
+    return {
+        "visits": int(visits or 0),
+        "playing": int(playing or 0),
+    }
+
+
+def extract_visits_30d_points(page_html: str):
+    json_candidates = extract_json_objects_from_html(page_html)
+
+    for raw in json_candidates:
+        try:
+            obj = json.loads(raw)
+        except Exception:
+            continue
+
+        found = deep_find_visits_series(obj)
+        if found:
+            return found
+
+    # fallback: try to locate an inline visits chart array directly
+    fallback_patterns = [
+        r'"Visits \(30d\)".{0,1200}?"data"\s*:\s*(\[[^\]]+\])',
+        r'"visits".{0,1200}?"data"\s*:\s*(\[[^\]]+\])',
+        r'"visits30d".{0,1200}?(\[[^\]]+\])',
+    ]
+
+    for pattern in fallback_patterns:
+        m = re.search(pattern, page_html, re.IGNORECASE | re.DOTALL)
+        if not m:
+            continue
+        try:
+            data = json.loads(m.group(1))
+            if isinstance(data, list):
+                return data
+        except Exception:
+            continue
+
+    return None
+
+
+async def fetch_rorizz_with_daily_visits(session: aiohttp.ClientSession, universe_id: int):
+    try:
+        page = await fetch_rorizz_page(session, universe_id)
+        stats = extract_current_stats(page["text"], page["html"])
+        points = extract_visits_30d_points(page["html"])
 
         return {
-            "name": title,
-            "visits": int(visits),
-            "playing": int(playing),
+            "name": page["title"],
+            "visits": stats["visits"],
+            "playing": stats["playing"],
+            "visits_30d_points": points,
         }
-
     except Exception as e:
         print(f"RoRizz error for {universe_id}: {e}")
         return None
 
 
-async def ensure_today_snapshots():
-    games = load_games()
-    if not games:
-        return
+def get_two_days_from_points(points, day_a: datetime.date, day_b: datetime.date):
+    if not points:
+        return None, None
 
-    today = now_local().date()
-
-    async with aiohttp.ClientSession() as session:
-        for game in games:
-            existing = get_snapshot(game["universe_id"], today)
-            if existing is not None:
-                continue
-
-            data = await fetch_rorizz(session, game["universe_id"])
-            if not data:
-                continue
-
-            save_snapshot(game["universe_id"], today, int(data["visits"]))
-            print(f"Seeded today's snapshot for {game['universe_id']} = {data['visits']}")
+    value_a = find_day_value_in_series(points, day_a)
+    value_b = find_day_value_in_series(points, day_b)
+    return value_a, value_b
 
 
 # ---------------- PANEL UI ----------------
@@ -278,7 +375,7 @@ class AddGameModal(discord.ui.Modal, title="Add RoRizz Game"):
         await interaction.response.defer(ephemeral=True)
 
         async with aiohttp.ClientSession() as session:
-            data = await fetch_rorizz(session, universe_id)
+            data = await fetch_rorizz_with_daily_visits(session, universe_id)
 
         if not data:
             await interaction.followup.send(
@@ -289,14 +386,10 @@ class AddGameModal(discord.ui.Modal, title="Add RoRizz Game"):
 
         add_game_to_db(universe_id, link, robux_per_visit_value)
 
-        # Save today's snapshot immediately so tomorrow can compare
-        save_snapshot(universe_id, now_local().date(), int(data["visits"]))
-
         await interaction.followup.send(
             f"✅ Added **{data['name']}**\n"
             f"🆔 `{universe_id}`\n"
-            f"💰 Robux per visit: `{robux_per_visit_value}`\n"
-            f"📸 Saved today's visit snapshot: `{int(data['visits']):,}`",
+            f"💰 Robux per visit: `{robux_per_visit_value}`",
             ephemeral=True,
         )
 
@@ -378,39 +471,47 @@ class PanelView(discord.ui.View):
 
 # ---------------- REPORT LOGIC ----------------
 
-async def build_daily_earned_message():
+async def build_daily_earned_message_from_website():
     games = load_games()
     if not games:
         return "📭 No tracked games added yet."
 
     today = now_local().date()
     yesterday = today - datetime.timedelta(days=1)
+    previous_day = today - datetime.timedelta(days=2)
 
     total_usd = 0.0
+    any_good = False
 
     async with aiohttp.ClientSession() as session:
         for game in games:
-            data = await fetch_rorizz(session, game["universe_id"])
+            data = await fetch_rorizz_with_daily_visits(session, game["universe_id"])
             if not data:
                 continue
 
-            visits_today = int(data["visits"])
-            save_snapshot(game["universe_id"], today, visits_today)
+            y_val, p_val = get_two_days_from_points(
+                data["visits_30d_points"],
+                previous_day,
+                yesterday,
+            )
 
-            visits_yesterday = get_snapshot(game["universe_id"], yesterday)
-            if visits_yesterday is None:
+            if y_val is None or p_val is None:
                 continue
 
-            diff = max(0, visits_today - visits_yesterday)
+            diff = max(0, y_val - p_val)
             earned_robux = diff * game["robux_per_visit"]
             earned_usd = earned_robux * USD_PER_ROBUX
             total_usd += earned_usd
+            any_good = True
+
+    if not any_good:
+        return "⚠️ Could not read yesterday's visits data from RoRizz."
 
     rounded_usd = int(round(total_usd))
     return f"🏆 {PROJECT_NAME} just earned ${rounded_usd:,}"
 
 
-async def build_previous_day_breakdown():
+async def build_previous_day_breakdown_from_website():
     games = load_games()
     if not games:
         return "📭 No tracked games added yet."
@@ -426,21 +527,29 @@ async def build_previous_day_breakdown():
 
     async with aiohttp.ClientSession() as session:
         for game in games:
-            visits_yesterday = get_snapshot(game["universe_id"], yesterday)
-            visits_previous = get_snapshot(game["universe_id"], previous_day)
+            data = await fetch_rorizz_with_daily_visits(session, game["universe_id"])
 
             game_name = f"Game {game['universe_id']}"
-            data = await fetch_rorizz(session, game["universe_id"])
             if data and data.get("name"):
                 game_name = data["name"]
 
-            if visits_yesterday is None or visits_previous is None:
+            if not data:
+                lines.append(f"• **{game_name}**: could not fetch data")
+                continue
+
+            y_val, p_val = get_two_days_from_points(
+                data["visits_30d_points"],
+                previous_day,
+                yesterday,
+            )
+
+            if y_val is None or p_val is None:
                 lines.append(
-                    f"• **{game_name}**: missing snapshot for {previous_day} or {yesterday}"
+                    f"• **{game_name}**: could not read website daily visits for {previous_day} or {yesterday}"
                 )
                 continue
 
-            diff = max(0, visits_yesterday - visits_previous)
+            diff = max(0, y_val - p_val)
             earned_robux = int(round(diff * game["robux_per_visit"]))
             earned_usd = earned_robux * USD_PER_ROBUX
 
@@ -490,7 +599,7 @@ async def reportnow(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
     try:
-        msg = await build_daily_earned_message()
+        msg = await build_daily_earned_message_from_website()
         await interaction.followup.send(msg, ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"❌ Failed: `{e}`", ephemeral=True)
@@ -501,7 +610,7 @@ async def prev(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
     try:
-        msg = await build_previous_day_breakdown()
+        msg = await build_previous_day_breakdown_from_website()
         await interaction.followup.send(msg[:1900], ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"❌ Failed: `{e}`", ephemeral=True)
@@ -509,7 +618,7 @@ async def prev(interaction: discord.Interaction):
 
 # ---------------- DAILY TASK ----------------
 
-@tasks.loop(time=datetime.time(hour=22, minute=0, tzinfo=ZoneInfo(TIMEZONE)))
+@tasks.loop(time=datetime.time(hour=1, minute=0, tzinfo=ZoneInfo(TIMEZONE)))
 async def daily_report():
     channel = bot.get_channel(REPORT_CHANNEL_ID)
     if channel is None:
@@ -517,7 +626,7 @@ async def daily_report():
         return
 
     try:
-        msg = await build_daily_earned_message()
+        msg = await build_daily_earned_message_from_website()
         await channel.send(msg)
         print("Daily report sent.")
     except Exception as e:
@@ -537,9 +646,6 @@ async def on_ready():
     bot.add_view(PanelView())
     synced = await bot.tree.sync()
     print(f"READY - synced {len(synced)} slash command(s)")
-
-    # Bootstrap today's snapshot so tomorrow's report can work
-    await ensure_today_snapshots()
 
     if not daily_report.is_running():
         daily_report.start()
