@@ -212,18 +212,44 @@ async def fetch_universe_id(session: aiohttp.ClientSession, place_id: int):
 
 
 async def fetch_games_data(session: aiohttp.ClientSession, universe_ids: list[int]):
-    if not universe_ids:
-        return []
+    results = {}
 
-    params = {"universeIds": ",".join(str(x) for x in universe_ids)}
-    async with session.get(
-        ROBLOX_GAMES_API,
-        params=params,
-        timeout=aiohttp.ClientTimeout(total=20),
-    ) as resp:
-        resp.raise_for_status()
-        data = await resp.json()
-        return data.get("data", [])
+    if universe_ids:
+        params = {"universeIds": ",".join(str(x) for x in universe_ids)}
+        async with session.get(
+            ROBLOX_GAMES_API,
+            params=params,
+            timeout=aiohttp.ClientTimeout(total=20),
+        ) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+
+            for item in data.get("data", []):
+                results[int(item["id"])] = item
+
+    # fallback per missing game
+    for uid in universe_ids:
+        if uid not in results:
+            try:
+                params = {"universeIds": str(uid)}
+                async with session.get(
+                    ROBLOX_GAMES_API,
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    resp.raise_for_status()
+                    data = await resp.json()
+
+                    if data.get("data"):
+                        results[uid] = data["data"][0]
+                        print(f"Recovered missing game: {uid}")
+                    else:
+                        print(f"Still missing after fallback: {uid}")
+
+            except Exception as e:
+                print(f"Failed fallback fetch for {uid}: {e}")
+
+    return list(results.values())
 
 
 async def repair_game_ids(session: aiohttp.ClientSession, games: list[dict]):
