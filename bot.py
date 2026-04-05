@@ -374,7 +374,7 @@ class PanelView(discord.ui.View):
 # REPORT LOGIC
 # ---------------------------
 
-async def build_report():
+async def calculate_report_data(update_baseline: bool):
     games = load_games()
     if not games:
         return {
@@ -412,6 +412,7 @@ async def build_report():
         gained_visits = max(0, current_visits - previous_visits)
 
         earned_robux = gained_visits * robux_per_visit
+        revenue = earned_robux * USD_PER_ROBUX
 
         total_new_visits += gained_visits
         total_robux += earned_robux
@@ -421,26 +422,27 @@ async def build_report():
             f"• **{name}**: +{gained_visits:,} visits, {earned_robux:,.2f} robux"
         )
 
-        upsert_state(
-            universe_id=universe_id,
-            visits=current_visits,
-            game_name=name,
-            last_report_date=date_str,
-        )
+        if update_baseline:
+            upsert_state(
+                universe_id=universe_id,
+                visits=current_visits,
+                game_name=name,
+                last_report_date=date_str,
+            )
 
-    total_usd = total_robux * USD_PER_ROBUX
+    total_revenue = total_robux * USD_PER_ROBUX
 
     full_report = (
-        f"🏆 **{PROJECT_NAME} just earned ${total_usd:,.2f}**\n\n"
+        f"🏆 **{PROJECT_NAME} just earned ${total_revenue:,.2f}**\n\n"
         f"**Past 24 hours**\n"
         f"• Total gained visits: **{total_new_visits:,}**\n"
         f"• Total earned robux: **{total_robux:,.2f}**\n"
-        f"• USD per robux: **${USD_PER_ROBUX:.4f}**\n\n"
+        f"• Revenue: **${total_revenue:,.2f}**\n\n"
         f"**Tracked games**\n"
         + "\n".join(per_game_lines)
     )
 
-    short_report = f"🏆 {PROJECT_NAME} just earned ${int(round(total_usd)):,}"
+    short_report = f"🏆 {PROJECT_NAME} just earned ${int(round(total_revenue)):,}"
 
     return {
         "short": short_report,
@@ -460,7 +462,7 @@ async def daily_report():
         return
 
     try:
-        data = await build_report()
+        data = await calculate_report_data(update_baseline=True)
         await channel.send(data["short"])
         print("Daily short report sent.")
     except Exception as e:
@@ -543,7 +545,7 @@ async def reportnow(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
     try:
-        data = await build_report()
+        data = await calculate_report_data(update_baseline=False)
         channel = bot.get_channel(REPORTNOW_CHANNEL_ID)
 
         if channel is None:
@@ -584,7 +586,7 @@ async def ccu(interaction: discord.Interaction):
             item = by_universe.get(universe_id)
 
             if not item:
-                lines.append(f"• `{universe_id}`: could not fetch data")
+                lines.append(f"• Game `{universe_id}`: could not fetch data")
                 continue
 
             name = item.get("name", f"Game {universe_id}")
