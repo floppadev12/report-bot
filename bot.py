@@ -16,9 +16,9 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 # =========================
 PROJECT_NAME = "Project Floppa"
 
-REPORT_CHANNEL_ID = 1490317756136947942       # short auto report at 22:00
-REPORTNOW_CHANNEL_ID = 1490325202792353963    # detailed /reportnow channel
-MILESTONE_CHANNEL_ID = 1490329238841196584    # milestone alerts channel
+REPORT_CHANNEL_ID = 1490317756136947942
+REPORTNOW_CHANNEL_ID = 1490325202792353963
+MILESTONE_CHANNEL_ID = 1490329238841196584
 
 USD_PER_ROBUX = 0.0038
 REPORT_TIMEZONE = "Europe/Bratislava"
@@ -412,14 +412,13 @@ async def calculate_report_data(update_baseline: bool):
         gained_visits = max(0, current_visits - previous_visits)
 
         earned_robux = gained_visits * robux_per_visit
-        revenue = earned_robux * USD_PER_ROBUX
 
         total_new_visits += gained_visits
         total_robux += earned_robux
 
         name = item.get("name", f"Game {universe_id}")
         per_game_lines.append(
-            f"• **{name}**: +{gained_visits:,} visits, {earned_robux:,.2f} robux"
+            f"• **{name}**: +{gained_visits:,} visits, {int(round(earned_robux)):,} robux"
         )
 
         if update_baseline:
@@ -436,7 +435,7 @@ async def calculate_report_data(update_baseline: bool):
         f"🏆 **{PROJECT_NAME} just earned ${total_revenue:,.2f}**\n\n"
         f"**Past 24 hours**\n"
         f"• Total gained visits: **{total_new_visits:,}**\n"
-        f"• Total earned robux: **{total_robux:,.2f}**\n"
+        f"• Total earned robux: **{int(round(total_robux)):,}**\n"
         f"• Revenue: **${total_revenue:,.2f}**\n\n"
         f"**Tracked games**\n"
         + "\n".join(per_game_lines)
@@ -567,43 +566,58 @@ async def ccu(interaction: discord.Interaction):
 
     try:
         games = load_games()
+        print(f"/ccu -> loaded {len(games)} tracked game(s)")
+
         if not games:
             await interaction.followup.send("📭 No tracked games added yet.", ephemeral=True)
             return
 
-        universe_ids = [g["universe_id"] for g in games]
+        universe_ids = [int(g["universe_id"]) for g in games]
+        print(f"/ccu -> universe_ids: {universe_ids}")
 
         async with aiohttp.ClientSession() as session:
             api_games = await fetch_games_data(session, universe_ids)
 
-        by_universe = {item["id"]: item for item in api_games}
+        print(f"/ccu -> api returned {len(api_games)} game(s)")
+
+        if not api_games:
+            await interaction.followup.send("❌ Roblox returned no CCU data.", ephemeral=True)
+            return
+
+        by_universe = {int(item["id"]): item for item in api_games}
 
         total_ccu = 0
         lines = []
 
         for game in games:
-            universe_id = game["universe_id"]
+            universe_id = int(game["universe_id"])
             item = by_universe.get(universe_id)
 
             if not item:
                 lines.append(f"• Game `{universe_id}`: could not fetch data")
                 continue
 
-            name = item.get("name", f"Game {universe_id}")
+            name = str(item.get("name", f"Game {universe_id}"))
             playing = int(item.get("playing", 0))
 
             total_ccu += playing
             lines.append(f"• **{name}**: {playing:,} CCU")
 
-        message = (
-            f"📈 {PROJECT_NAME} currently has {total_ccu:,} CCU\n\n"
-            + "\n".join(lines)
-        )
+        message = f"📈 {PROJECT_NAME} currently has {total_ccu:,} CCU"
+
+        if lines:
+            message += "\n\n" + "\n".join(lines)
+
+        print(f"/ccu -> sending message: {message[:200]}")
 
         await interaction.followup.send(message[:1900], ephemeral=True)
 
     except Exception as e:
-        await interaction.followup.send(f"❌ Failed to fetch CCU: `{e}`", ephemeral=True)
+        print(f"/ccu failed: {repr(e)}")
+        await interaction.followup.send(
+            f"❌ Failed to fetch CCU: `{type(e).__name__}: {e}`",
+            ephemeral=True,
+        )
 
 
 # ---------------------------
