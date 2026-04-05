@@ -8,77 +8,64 @@ from discord import app_commands
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
+# 👇 Set your project name ONCE here
+PROJECT_NAME = "Project Floppa"
+
 DATA_FILE = Path("games.json")
 
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 
-def load_games() -> list[dict]:
+def load_games():
     if not DATA_FILE.exists():
         return []
     try:
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            if isinstance(data, list):
-                return data
-            return []
-    except Exception:
+        with open(DATA_FILE, "r") as f:
+            return json.load(f)
+    except:
         return []
 
 
-def save_games(games: list[dict]) -> None:
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(games, f, indent=2, ensure_ascii=False)
+def save_games(games):
+    with open(DATA_FILE, "w") as f:
+        json.dump(games, f, indent=2)
 
 
 class AddGameModal(discord.ui.Modal, title="Add Roblox Game"):
-    project_name = discord.ui.TextInput(
-        label="Project name",
-        placeholder="Project Floppa",
-        max_length=100,
-    )
-
     game_link = discord.ui.TextInput(
         label="Game link",
         placeholder="https://www.roblox.com/games/123456789/your-game",
-        max_length=300,
     )
 
     robux_per_visit = discord.ui.TextInput(
         label="Robux per visit",
         placeholder="0.25",
-        max_length=20,
     )
 
-    async def on_submit(self, interaction: discord.Interaction) -> None:
+    async def on_submit(self, interaction: discord.Interaction):
         games = load_games()
 
         try:
-            rpv = float(str(self.robux_per_visit).strip())
-        except ValueError:
+            rpv = float(str(self.robux_per_visit))
+        except:
             await interaction.response.send_message(
-                "❌ Robux per visit must be a number, like `0.25`.",
+                "❌ Robux per visit must be a number",
                 ephemeral=True,
             )
             return
 
-        link = str(self.game_link).strip()
-        name = str(self.project_name).strip()
+        games.append({
+            "game_link": str(self.game_link),
+            "robux_per_visit": rpv
+        })
 
-        games.append(
-            {
-                "project_name": name,
-                "game_link": link,
-                "robux_per_visit": rpv,
-            }
-        )
         save_games(games)
 
         await interaction.response.send_message(
-            f"✅ Added **{name}**\n"
-            f"🔗 {link}\n"
-            f"💰 Robux per visit: **{rpv}**",
+            f"✅ Game added\n"
+            f"🔗 {self.game_link}\n"
+            f"💰 {rpv} robux/visit",
             ephemeral=True,
         )
 
@@ -87,144 +74,94 @@ class RemoveGameSelect(discord.ui.Select):
     def __init__(self):
         games = load_games()
 
-        if not games:
-            options = [
+        options = []
+        for i, game in enumerate(games):
+            options.append(
                 discord.SelectOption(
-                    label="No games saved",
-                    value="none",
-                    description="Add a game first",
+                    label=f"Game {i+1}",
+                    value=str(i),
+                    description=game["game_link"][:100],
                 )
-            ]
-            disabled = True
-        else:
-            options = []
-            for i, game in enumerate(games):
-                options.append(
-                    discord.SelectOption(
-                        label=game["project_name"][:100],
-                        value=str(i),
-                        description=str(game["game_link"])[:100],
-                    )
-                )
-            disabled = False
+            )
 
         super().__init__(
-            placeholder="Choose a game to remove",
-            options=options,
-            min_values=1,
-            max_values=1,
-            disabled=disabled,
+            placeholder="Select game to remove",
+            options=options if options else [
+                discord.SelectOption(label="No games", value="none")
+            ],
         )
 
-    async def callback(self, interaction: discord.Interaction) -> None:
+    async def callback(self, interaction: discord.Interaction):
         if self.values[0] == "none":
-            await interaction.response.send_message(
-                "❌ No games to remove.",
-                ephemeral=True,
-            )
+            await interaction.response.send_message("No games.", ephemeral=True)
             return
 
         games = load_games()
-        index = int(self.values[0])
-
-        if index < 0 or index >= len(games):
-            await interaction.response.send_message(
-                "❌ That game was not found.",
-                ephemeral=True,
-            )
-            return
-
-        removed = games.pop(index)
+        removed = games.pop(int(self.values[0]))
         save_games(games)
 
         await interaction.response.send_message(
-            f"🗑️ Removed **{removed['project_name']}**",
-            ephemeral=True,
+            f"🗑️ Removed game:\n{removed['game_link']}",
+            ephemeral=True
         )
 
 
 class RemoveGameView(discord.ui.View):
     def __init__(self):
-        super().__init__(timeout=60)
+        super().__init__()
         self.add_item(RemoveGameSelect())
 
 
-class ControlPanelView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
+class PanelView(discord.ui.View):
 
-    @discord.ui.button(label="Add Game", style=discord.ButtonStyle.success, custom_id="add_game_btn")
-    async def add_game_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="Add Game", style=discord.ButtonStyle.success)
+    async def add(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(AddGameModal())
 
-    @discord.ui.button(label="Remove Game", style=discord.ButtonStyle.danger, custom_id="remove_game_btn")
-    async def remove_game_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="Remove Game", style=discord.ButtonStyle.danger)
+    async def remove(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(
-            "Select a game to remove:",
+            "Select a game:",
             view=RemoveGameView(),
-            ephemeral=True,
+            ephemeral=True
         )
 
-    @discord.ui.button(label="List Games", style=discord.ButtonStyle.primary, custom_id="list_games_btn")
-    async def list_games_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="List Games", style=discord.ButtonStyle.primary)
+    async def list_games(self, interaction: discord.Interaction, button: discord.ui.Button):
         games = load_games()
 
         if not games:
-            await interaction.response.send_message(
-                "📭 No games saved yet.",
-                ephemeral=True,
-            )
+            await interaction.response.send_message("No games added.", ephemeral=True)
             return
 
-        lines = []
-        for i, game in enumerate(games, start=1):
-            lines.append(
-                f"**{i}. {game['project_name']}**\n"
-                f"🔗 {game['game_link']}\n"
-                f"💰 Robux per visit: **{game['robux_per_visit']}**"
-            )
+        msg = ""
+        for i, g in enumerate(games):
+            msg += f"**{i+1}.** {g['game_link']}\n💰 {g['robux_per_visit']} robux/visit\n\n"
 
-        message = "\n\n".join(lines)
-
-        await interaction.response.send_message(
-            message[:1900],
-            ephemeral=True,
-        )
+        await interaction.response.send_message(msg[:1900], ephemeral=True)
 
 
 @bot.event
 async def on_ready():
-    bot.add_view(ControlPanelView())
+    bot.add_view(PanelView())
 
-    try:
-        synced = await bot.tree.sync()
-        print(f"Logged in as {bot.user} (ID: {bot.user.id})")
-        print(f"Synced {len(synced)} slash command(s)")
-    except Exception as e:
-        print(f"Slash command sync failed: {e}")
+    await bot.tree.sync()
+
+    print(f"Logged in as {bot.user}")
 
 
-@bot.tree.command(name="panel", description="Post the Roblox game control panel")
+@bot.tree.command(name="panel", description="Open control panel")
 async def panel(interaction: discord.Interaction):
     embed = discord.Embed(
-        title="Roblox Report Control Panel",
-        description=(
-            "Use the buttons below to manage tracked games.\n\n"
-            "• Add a game\n"
-            "• Remove a game\n"
-            "• List saved games"
-        ),
+        title="Roblox Control Panel",
+        description="Manage your tracked games"
     )
-    await interaction.response.send_message(embed=embed, view=ControlPanelView())
+    await interaction.response.send_message(embed=embed, view=PanelView())
 
 
-@bot.tree.command(name="ping", description="Test if the bot is working")
+@bot.tree.command(name="ping", description="Test bot")
 async def ping(interaction: discord.Interaction):
     await interaction.response.send_message("✅ Bot is working!")
 
 
-if __name__ == "__main__":
-    if not TOKEN:
-        raise RuntimeError("DISCORD_TOKEN is missing.")
-
-    bot.run(TOKEN)
+bot.run(TOKEN)
