@@ -38,12 +38,43 @@ def get_conn():
 
 def init_db():
     with get_conn().cursor() as cur:
+        # Create base table if it doesn't exist
         cur.execute("""
         CREATE TABLE IF NOT EXISTS games (
             universe_id BIGINT PRIMARY KEY,
             game_link TEXT NOT NULL,
             robux_per_visit FLOAT NOT NULL
         );
+        """)
+
+        # Old versions may still have place_id NOT NULL.
+        # Make sure the column exists as nullable if it exists at all.
+        cur.execute("""
+        ALTER TABLE games
+        ADD COLUMN IF NOT EXISTS place_id BIGINT;
+        """)
+
+        cur.execute("""
+        ALTER TABLE games
+        ALTER COLUMN place_id DROP NOT NULL;
+        """)
+
+        # Make sure robux_per_visit exists for old schemas
+        cur.execute("""
+        ALTER TABLE games
+        ADD COLUMN IF NOT EXISTS robux_per_visit FLOAT;
+        """)
+
+        # Fill any null robux_per_visit with 0 temporarily to satisfy NOT NULL upgrade
+        cur.execute("""
+        UPDATE games
+        SET robux_per_visit = 0
+        WHERE robux_per_visit IS NULL;
+        """)
+
+        cur.execute("""
+        ALTER TABLE games
+        ALTER COLUMN robux_per_visit SET NOT NULL;
         """)
 
         cur.execute("""
@@ -153,7 +184,6 @@ async def fetch_rorizz(session: aiohttp.ClientSession, universe_id: int):
         title = title_match.group(1).strip() if title_match else f"Game {universe_id}"
         title = title.replace(" - RoRizz", "").strip()
 
-        # Try several common patterns
         playing_match = (
             re.search(r'([\d.,]+[KMBkmb]?)\s+Playing', html, re.IGNORECASE)
             or re.search(r'Playing[^0-9]*([\d.,]+[KMBkmb]?)', html, re.IGNORECASE)
