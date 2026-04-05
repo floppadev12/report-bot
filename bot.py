@@ -541,7 +541,7 @@ async def prev(interaction: discord.Interaction):
 
 # ---------------- DAILY TASK ----------------
 
-@tasks.loop(time=datetime.time(hour=1, minute=0, tzinfo=ZoneInfo(TIMEZONE)))
+@tasks.loop(time=datetime.time(hour=2, minute=0, tzinfo=ZoneInfo(TIMEZONE)))
 async def daily_report():
     channel = bot.get_channel(REPORT_CHANNEL_ID)
     if channel is None:
