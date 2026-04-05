@@ -1,6 +1,5 @@
 import os
 import re
-import json
 import html as html_lib
 import datetime
 from zoneinfo import ZoneInfo
@@ -37,12 +36,6 @@ MILESTONES = {
 ROBLOX_GAMES_API = "https://games.roblox.com/v1/games"
 ROBLOX_UNIVERSE_API = "https://apis.roblox.com/universes/v1/places/{place_id}/universe"
 ROBLOX_GAME_PAGE = "https://www.roblox.com/games/{place_id}"
-
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/124.0.0.0 Safari/537.36"
-)
 
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -288,8 +281,18 @@ async def scrape_game_data(session: aiohttp.ClientSession, place_id: int):
     url = ROBLOX_GAME_PAGE.format(place_id=place_id)
 
     headers = {
-        "User-Agent": USER_AGENT,
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.roblox.com/",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
     }
 
     try:
@@ -323,7 +326,7 @@ async def scrape_game_data(session: aiohttp.ClientSession, place_id: int):
 
         name = _extract_name_from_html(html)
 
-        if playing is None and visits is None:
+        if visits is None and playing is None:
             print(f"Scrape found no usable stats for place {place_id}")
             return None
 
@@ -336,7 +339,7 @@ async def scrape_game_data(session: aiohttp.ClientSession, place_id: int):
         }
 
     except Exception as e:
-        print(f"Scrape failed for place {place_id}: {e}")
+        print(f"Scrape exception for place {place_id}: {e}")
         return None
 
 
@@ -372,7 +375,6 @@ async def build_stats_map(session: aiohttp.ClientSession, games: list[dict]):
     api_games = await fetch_games_data(session, universe_ids)
     by_universe = {int(item["id"]): item for item in api_games}
 
-    # scrape fallback for any game the API skipped
     for game in games:
         universe_id = int(game["universe_id"])
         if universe_id in by_universe:
@@ -380,7 +382,6 @@ async def build_stats_map(session: aiohttp.ClientSession, games: list[dict]):
 
         scraped = await scrape_game_data(session, game["place_id"])
         if scraped:
-            # make sure it maps to the tracked universe id even if scraped id missing
             scraped["id"] = universe_id
             by_universe[universe_id] = scraped
             print(f"Recovered missing game via scrape: {universe_id} -> {game['game_link']}")
