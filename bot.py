@@ -1,4 +1,4 @@
-[05/04/2026 16:11] enzo: import os
+import os
 import re
 import html as html_lib
 import datetime
@@ -150,7 +150,9 @@ def load_state():
         }
         for row in rows
     }
-[05/04/2026 16:11] enzo: def upsert_state(universe_id: int, visits: int, game_name: str, last_report_date: str):
+
+
+def upsert_state(universe_id: int, visits: int, game_name: str, last_report_date: str):
     connection = get_conn()
     with connection.cursor() as cur:
         cur.execute("""
@@ -278,7 +280,7 @@ def _extract_number_from_html(patterns, text):
 def _extract_name_from_html(text):
     patterns = [
         r'"name"\s*:\s*"([^"]+)"',
-[05/04/2026 16:11] enzo: r'"Name"\s*:\s*"([^"]+)"',
+        r'"Name"\s*:\s*"([^"]+)"',
         r'<title>\s*([^<]+?)\s*-\s*Roblox\s*</title>',
         r'"gameName"\s*:\s*"([^"]+)"',
     ]
@@ -401,7 +403,9 @@ async def build_stats_map(session: aiohttp.ClientSession, games: list[dict]):
             print(f"Still missing after scrape fallback: {universe_id} -> {game['game_link']}")
 
     return by_universe
-[05/04/2026 16:11] enzo: # ---------------------------
+
+
+# ---------------------------
 # PANEL UI
 # ---------------------------
 
@@ -533,8 +537,7 @@ class PanelView(discord.ui.View):
     async def add(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(AddGameModal())
 
-    @discord.ui.button(label="Remove Game", style=discord.ButtonStyle.
-[05/04/2026 16:11] enzo: danger, custom_id="remove_game_btn")
+    @discord.ui.button(label="Remove Game", style=discord.ButtonStyle.danger, custom_id="remove_game_btn")
     async def remove(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(
             "Select a game:",
@@ -592,7 +595,7 @@ async def calculate_report_data(update_baseline: bool):
         item = by_universe.get(universe_id)
 
         if not item:
-            per_game_lines.append(f"• {game['game_link']}: could not fetch data")
+            per_game_lines.append(f"• **{game['game_link']}**: could not fetch data")
             continue
 
         current_visits = int(item.get("visits", 0))
@@ -606,7 +609,7 @@ async def calculate_report_data(update_baseline: bool):
 
         name = item.get("name", f"Game {universe_id}")
         per_game_lines.append(
-            f"• {name}: +{gained_visits:,} visits, {int(round(earned_robux)):,} robux"
+            f"• **{name}**: +{gained_visits:,} visits, {int(round(earned_robux)):,} robux"
         )
 
         if update_baseline:
@@ -663,7 +666,7 @@ async def before_daily_report():
 
 @tasks.loop(minutes=5)
 async def check_ccu_milestones():
-[05/04/2026 16:11] enzo: milestone_channel = bot.get_channel(MILESTONE_CHANNEL_ID)
+    milestone_channel = bot.get_channel(MILESTONE_CHANNEL_ID)
     if milestone_channel is None:
         print("Milestone channel not found. Check MILESTONE_CHANNEL_ID.")
         return
@@ -768,19 +771,19 @@ async def ccu(interaction: discord.Interaction):
             item = by_universe.get(universe_id)
 
             if not item:
-                lines.append(f"• {game['game_link']}: could not fetch data")
+                lines.append(f"• **{game['game_link']}**: could not fetch data")
                 continue
 
             name = str(item.get("name", f"Game {universe_id}"))
             playing = int(item.get("playing", 0))
 
             total_ccu += playing
-            lines.append(f"• {name}: {playing:,} CCU")
+            lines.append(f"• **{name}**: {playing:,} CCU")
 
         message = f"📈 {PROJECT_NAME} currently has {total_ccu:,} CCU"
 
         if lines:
-[05/04/2026 16:11] enzo: message += "\n\n" + "\n".join(lines)
+            message += "\n\n" + "\n".join(lines)
 
         await interaction.followup.send(message[:1900], ephemeral=True)
 
@@ -812,7 +815,7 @@ async def on_ready():
         check_ccu_milestones.start()
 
 
-if name == "__main__":
+if __name__ == "__main__":
     if not TOKEN:
         raise RuntimeError("DISCORD_TOKEN is missing.")
     if not DATABASE_URL:
