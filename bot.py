@@ -121,6 +121,16 @@ def remove_game_by_universe_id(universe_id: int):
         cur.execute("DELETE FROM games WHERE universe_id = %s", (universe_id,))
 
 
+def update_game_universe(old_universe_id: int, new_universe_id: int, place_id: int):
+    connection = get_conn()
+    with connection.cursor() as cur:
+        cur.execute("""
+            UPDATE games
+            SET universe_id = %s, place_id = %s
+            WHERE universe_id = %s
+        """, (new_universe_id, place_id, old_universe_id))
+
+
 def load_state():
     connection = get_conn()
     with connection.cursor() as cur:
@@ -182,9 +192,14 @@ def mark_milestone_sent(universe_id: int, milestone: int, announced_at: str):
 # ---------------------------
 
 def extract_place_id(game_link: str):
-    match = re.search(r"roblox\.com/games/(\d+)", game_link)
-    if match:
-        return int(match.group(1))
+    patterns = [
+        r"roblox\.com/games/(\d+)",
+        r"[?&]placeId=(\d+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, game_link)
+        if match:
+            return int(match.group(1))
     return None
 
 
@@ -209,6 +224,33 @@ async def fetch_games_data(session: aiohttp.ClientSession, universe_ids: list[in
         resp.raise_for_status()
         data = await resp.json()
         return data.get("data", [])
+
+
+async def repair_game_ids(session: aiohttp.ClientSession, games: list[dict]):
+    repaired_games = []
+
+    for game in games:
+        link = game["game_link"]
+        old_universe_id = game["universe_id"]
+        place_id = extract_place_id(link) or game["place_id"]
+
+        try:
+            fresh_universe_id = await fetch_universe_id(session, place_id)
+        except Exception:
+            fresh_universe_id = None
+
+        if fresh_universe_id and fresh_universe_id != old_universe_id:
+            print(f"Repairing universe ID: {old_universe_id} -> {fresh_universe_id} for {link}")
+            update_game_universe(old_universe_id, fresh_universe_id, place_id)
+            game["universe_id"] = int(fresh_universe_id)
+            game["place_id"] = int(place_id)
+        elif fresh_universe_id:
+            game["universe_id"] = int(fresh_universe_id)
+            game["place_id"] = int(place_id)
+
+        repaired_games.append(game)
+
+    return repaired_games
 
 
 # ---------------------------
@@ -387,24 +429,25 @@ async def calculate_report_data(update_baseline: bool):
     now_local = datetime.datetime.now(tz)
     date_str = now_local.strftime("%Y-%m-%d")
 
-    universe_ids = [g["universe_id"] for g in games]
-
     async with aiohttp.ClientSession() as session:
+        games = await repair_game_ids(session, games)
+
+        universe_ids = [g["universe_id"] for g in games]
         api_games = await fetch_games_data(session, universe_ids)
 
-    by_universe = {item["id"]: item for item in api_games}
+    by_universe = {int(item["id"]): item for item in api_games}
 
     total_new_visits = 0
     total_robux = 0.0
     per_game_lines = []
 
     for game in games:
-        universe_id = game["universe_id"]
+        universe_id = int(game["universe_id"])
         robux_per_visit = float(game["robux_per_visit"])
         item = by_universe.get(universe_id)
 
         if not item:
-            per_game_lines.append(f"• `{universe_id}`: could not fetch data")
+            per_game_lines.append(f"• **{game['game_link']}**: could not fetch data")
             continue
 
         current_visits = int(item.get("visits", 0))
@@ -484,20 +527,20 @@ async def check_ccu_milestones():
     if not games:
         return
 
-    universe_ids = [g["universe_id"] for g in games]
-
     try:
         async with aiohttp.ClientSession() as session:
+            games = await repair_game_ids(session, games)
+            universe_ids = [g["universe_id"] for g in games]
             api_games = await fetch_games_data(session, universe_ids)
     except Exception as e:
         print(f"Failed to fetch CCU for milestones: {e}")
         return
 
     now_str = datetime.datetime.now(ZoneInfo(REPORT_TIMEZONE)).isoformat()
-    by_universe = {item["id"]: item for item in api_games}
+    by_universe = {int(item["id"]): item for item in api_games}
 
     for game in games:
-        universe_id = game["universe_id"]
+        universe_id = int(game["universe_id"])
         item = by_universe.get(universe_id)
         if not item:
             continue
@@ -566,19 +609,14 @@ async def ccu(interaction: discord.Interaction):
 
     try:
         games = load_games()
-        print(f"/ccu -> loaded {len(games)} tracked game(s)")
-
         if not games:
             await interaction.followup.send("📭 No tracked games added yet.", ephemeral=True)
             return
 
-        universe_ids = [int(g["universe_id"]) for g in games]
-        print(f"/ccu -> universe_ids: {universe_ids}")
-
         async with aiohttp.ClientSession() as session:
+            games = await repair_game_ids(session, games)
+            universe_ids = [int(g["universe_id"]) for g in games]
             api_games = await fetch_games_data(session, universe_ids)
-
-        print(f"/ccu -> api returned {len(api_games)} game(s)")
 
         if not api_games:
             await interaction.followup.send("❌ Roblox returned no CCU data.", ephemeral=True)
@@ -594,7 +632,7 @@ async def ccu(interaction: discord.Interaction):
             item = by_universe.get(universe_id)
 
             if not item:
-                lines.append(f"• Game `{universe_id}`: could not fetch data")
+                lines.append(f"• **{game['game_link']}**: could not fetch data")
                 continue
 
             name = str(item.get("name", f"Game {universe_id}"))
@@ -607,8 +645,6 @@ async def ccu(interaction: discord.Interaction):
 
         if lines:
             message += "\n\n" + "\n".join(lines)
-
-        print(f"/ccu -> sending message: {message[:200]}")
 
         await interaction.followup.send(message[:1900], ephemeral=True)
 
