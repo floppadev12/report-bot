@@ -15,11 +15,21 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 # CONFIG
 # =========================
 PROJECT_NAME = "Project Floppa"
-REPORT_CHANNEL_ID = 1490317756136947942  # <-- replace with your Discord channel ID
+
+REPORT_CHANNEL_ID = 1490317756136947942       # short auto report at 22:00
+REPORTNOW_CHANNEL_ID = 1490325202792353963    # detailed /reportnow channel
+MILESTONE_CHANNEL_ID = 1490329238841196584    # milestone alerts channel
+
 USD_PER_ROBUX = 0.0038
 REPORT_TIMEZONE = "Europe/Bratislava"
 REPORT_HOUR = 22
 REPORT_MINUTE = 0
+
+MILESTONES = {
+    1000: "🥉",
+    5000: "🥈",
+    10000: "🥇",
+}
 # =========================
 
 ROBLOX_GAMES_API = "https://games.roblox.com/v1/games"
@@ -64,6 +74,15 @@ def init_db():
             );
         """)
 
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS ccu_milestones (
+                universe_id BIGINT NOT NULL,
+                milestone BIGINT NOT NULL,
+                announced_at TEXT,
+                PRIMARY KEY (universe_id, milestone)
+            );
+        """)
+
 
 def load_games():
     connection = get_conn()
@@ -77,9 +96,9 @@ def load_games():
 
     return [
         {
-            "universe_id": row[0],
+            "universe_id": int(row[0]),
             "game_link": row[1],
-            "place_id": row[2],
+            "place_id": int(row[2]),
             "robux_per_visit": float(row[3]),
         }
         for row in rows
@@ -135,6 +154,29 @@ def upsert_state(universe_id: int, visits: int, game_name: str, last_report_date
         """, (universe_id, visits, game_name, last_report_date))
 
 
+def milestone_already_sent(universe_id: int, milestone: int) -> bool:
+    connection = get_conn()
+    with connection.cursor() as cur:
+        cur.execute("""
+            SELECT 1
+            FROM ccu_milestones
+            WHERE universe_id = %s AND milestone = %s
+            LIMIT 1
+        """, (universe_id, milestone))
+        row = cur.fetchone()
+    return row is not None
+
+
+def mark_milestone_sent(universe_id: int, milestone: int, announced_at: str):
+    connection = get_conn()
+    with connection.cursor() as cur:
+        cur.execute("""
+            INSERT INTO ccu_milestones (universe_id, milestone, announced_at)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (universe_id, milestone) DO NOTHING
+        """, (universe_id, milestone, announced_at))
+
+
 # ---------------------------
 # ROBLOX HELPERS
 # ---------------------------
@@ -159,7 +201,11 @@ async def fetch_games_data(session: aiohttp.ClientSession, universe_ids: list[in
         return []
 
     params = {"universeIds": ",".join(str(x) for x in universe_ids)}
-    async with session.get(ROBLOX_GAMES_API, params=params, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+    async with session.get(
+        ROBLOX_GAMES_API,
+        params=params,
+        timeout=aiohttp.ClientTimeout(total=20),
+    ) as resp:
         resp.raise_for_status()
         data = await resp.json()
         return data.get("data", [])
@@ -333,7 +379,7 @@ async def build_report():
     if not games:
         return {
             "short": f"🏆 {PROJECT_NAME} just earned $0",
-            "full": "📭 No tracked games added yet."
+            "full": "📭 No tracked games added yet.",
         }
 
     state = load_state()
@@ -398,9 +444,13 @@ async def build_report():
 
     return {
         "short": short_report,
-        "full": full_report
+        "full": full_report,
     }
 
+
+# ---------------------------
+# AUTOMATIONS
+# ---------------------------
 
 @tasks.loop(time=datetime.time(hour=REPORT_HOUR, minute=REPORT_MINUTE, tzinfo=ZoneInfo(REPORT_TIMEZONE)))
 async def daily_report():
@@ -422,22 +472,57 @@ async def before_daily_report():
     await bot.wait_until_ready()
 
 
+@tasks.loop(minutes=5)
+async def check_ccu_milestones():
+    milestone_channel = bot.get_channel(MILESTONE_CHANNEL_ID)
+    if milestone_channel is None:
+        print("Milestone channel not found. Check MILESTONE_CHANNEL_ID.")
+        return
+
+    games = load_games()
+    if not games:
+        return
+
+    universe_ids = [g["universe_id"] for g in games]
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            api_games = await fetch_games_data(session, universe_ids)
+    except Exception as e:
+        print(f"Failed to fetch CCU for milestones: {e}")
+        return
+
+    now_str = datetime.datetime.now(ZoneInfo(REPORT_TIMEZONE)).isoformat()
+    by_universe = {item["id"]: item for item in api_games}
+
+    for game in games:
+        universe_id = game["universe_id"]
+        item = by_universe.get(universe_id)
+        if not item:
+            continue
+
+        game_name = item.get("name", f"Game {universe_id}")
+        playing = int(item.get("playing", 0))
+
+        for milestone, emoji in sorted(MILESTONES.items()):
+            if playing >= milestone and not milestone_already_sent(universe_id, milestone):
+                message = f"{emoji} {PROJECT_NAME} hit {milestone:,} CCU with {game_name}"
+                try:
+                    await milestone_channel.send(message)
+                    mark_milestone_sent(universe_id, milestone, now_str)
+                    print(f"Milestone sent: {game_name} -> {milestone}")
+                except Exception as e:
+                    print(f"Failed to send milestone for {game_name}: {e}")
+
+
+@check_ccu_milestones.before_loop
+async def before_check_ccu_milestones():
+    await bot.wait_until_ready()
+
+
 # ---------------------------
-# BOT EVENTS / COMMANDS
+# COMMANDS
 # ---------------------------
-
-@bot.event
-async def on_ready():
-    init_db()
-    bot.add_view(PanelView())
-
-    synced = await bot.tree.sync()
-    print(f"Logged in as {bot.user} (ID: {bot.user.id})")
-    print(f"Synced {len(synced)} slash command(s)")
-
-    if not daily_report.is_running():
-        daily_report.start()
-
 
 @bot.tree.command(name="panel", description="Open control panel")
 async def panel(interaction: discord.Interaction):
@@ -459,11 +544,11 @@ async def reportnow(interaction: discord.Interaction):
 
     try:
         data = await build_report()
-        channel = bot.get_channel(REPORT_CHANNEL_ID)
+        channel = bot.get_channel(REPORTNOW_CHANNEL_ID)
 
         if channel is None:
             await interaction.followup.send(
-                "❌ Report channel not found. Check REPORT_CHANNEL_ID.",
+                "❌ Report-now channel not found. Check REPORTNOW_CHANNEL_ID.",
                 ephemeral=True,
             )
             return
@@ -472,6 +557,71 @@ async def reportnow(interaction: discord.Interaction):
         await interaction.followup.send("✅ Detailed report sent.", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"❌ Failed to build report: `{e}`", ephemeral=True)
+
+
+@bot.tree.command(name="ccu", description="Show current total CCU and tracked games")
+async def ccu(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    try:
+        games = load_games()
+        if not games:
+            await interaction.followup.send("📭 No tracked games added yet.", ephemeral=True)
+            return
+
+        universe_ids = [g["universe_id"] for g in games]
+
+        async with aiohttp.ClientSession() as session:
+            api_games = await fetch_games_data(session, universe_ids)
+
+        by_universe = {item["id"]: item for item in api_games}
+
+        total_ccu = 0
+        lines = []
+
+        for game in games:
+            universe_id = game["universe_id"]
+            item = by_universe.get(universe_id)
+
+            if not item:
+                lines.append(f"• `{universe_id}`: could not fetch data")
+                continue
+
+            name = item.get("name", f"Game {universe_id}")
+            playing = int(item.get("playing", 0))
+
+            total_ccu += playing
+            lines.append(f"• **{name}**: {playing:,} CCU")
+
+        message = (
+            f"📈 {PROJECT_NAME} currently has {total_ccu:,} CCU\n\n"
+            + "\n".join(lines)
+        )
+
+        await interaction.followup.send(message[:1900], ephemeral=True)
+
+    except Exception as e:
+        await interaction.followup.send(f"❌ Failed to fetch CCU: `{e}`", ephemeral=True)
+
+
+# ---------------------------
+# BOT EVENTS
+# ---------------------------
+
+@bot.event
+async def on_ready():
+    init_db()
+    bot.add_view(PanelView())
+
+    synced = await bot.tree.sync()
+    print(f"Logged in as {bot.user} (ID: {bot.user.id})")
+    print(f"Synced {len(synced)} slash command(s)")
+
+    if not daily_report.is_running():
+        daily_report.start()
+
+    if not check_ccu_milestones.is_running():
+        check_ccu_milestones.start()
 
 
 if __name__ == "__main__":
