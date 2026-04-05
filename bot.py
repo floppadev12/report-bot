@@ -380,6 +380,60 @@ async def build_daily_earned_message():
     return f"🏆 {PROJECT_NAME} just earned ${rounded_usd:,}"
 
 
+async def build_previous_day_breakdown():
+    games = load_games()
+    if not games:
+        return "📭 No tracked games added yet."
+
+    today = now_local().date()
+    yesterday = today - datetime.timedelta(days=1)
+    previous_day = today - datetime.timedelta(days=2)
+
+    total_visits = 0
+    total_robux = 0
+    total_usd = 0.0
+    lines = []
+
+    async with aiohttp.ClientSession() as session:
+        for game in games:
+            visits_yesterday = get_snapshot(game["universe_id"], yesterday)
+            visits_previous = get_snapshot(game["universe_id"], previous_day)
+
+            game_name = f"Game {game['universe_id']}"
+            data = await fetch_rorizz(session, game["universe_id"])
+            if data and data.get("name"):
+                game_name = data["name"]
+
+            if visits_yesterday is None or visits_previous is None:
+                lines.append(
+                    f"• **{game_name}**: missing snapshot for {previous_day} or {yesterday}"
+                )
+                continue
+
+            diff = max(0, visits_yesterday - visits_previous)
+            earned_robux = int(round(diff * game["robux_per_visit"]))
+            earned_usd = earned_robux * USD_PER_ROBUX
+
+            total_visits += diff
+            total_robux += earned_robux
+            total_usd += earned_usd
+
+            lines.append(
+                f"• **{game_name}** | +{diff:,} visits | {earned_robux:,} robux | ${earned_usd:,.2f}"
+            )
+
+    header = (
+        f"📊 **Yesterday breakdown**\n"
+        f"**{previous_day} → {yesterday}**\n\n"
+        f"• Total visits: **{total_visits:,}**\n"
+        f"• Total robux: **{total_robux:,}**\n"
+        f"• Total USD: **${total_usd:,.2f}**\n\n"
+        f"**Per game**\n"
+    )
+
+    return header + "\n".join(lines)
+
+
 # ---------------- COMMANDS ----------------
 
 @bot.tree.command(name="panel", description="Open control panel")
@@ -408,6 +462,17 @@ async def reportnow(interaction: discord.Interaction):
     try:
         msg = await build_daily_earned_message()
         await interaction.followup.send(msg, ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Failed: `{e}`", ephemeral=True)
+
+
+@bot.tree.command(name="prev", description="Show yesterday vs previous day earnings breakdown")
+async def prev(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    try:
+        msg = await build_previous_day_breakdown()
+        await interaction.followup.send(msg[:1900], ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"❌ Failed: `{e}`", ephemeral=True)
 
