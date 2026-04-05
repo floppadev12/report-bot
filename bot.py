@@ -16,9 +16,9 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 # =========================
 PROJECT_NAME = "Project Floppa"
 
-REPORT_CHANNEL_ID = 123456789012345678       # short auto report at 22:00
-REPORTNOW_CHANNEL_ID = 123456789012345679    # detailed /reportnow channel
-MILESTONE_CHANNEL_ID = 123456789012345680    # milestone alerts channel
+REPORT_CHANNEL_ID = 1490317756136947942       # short auto report at 22:00
+REPORTNOW_CHANNEL_ID = 1490325202792353963    # detailed /reportnow channel
+MILESTONE_CHANNEL_ID = 1490329238841196584    # milestone alerts channel
 
 USD_PER_ROBUX = 0.0038
 REPORT_TIMEZONE = "Europe/Bratislava"
