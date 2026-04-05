@@ -20,6 +20,12 @@ MILESTONE_CHANNEL_ID = 1490329238841196584
 USD_PER_ROBUX = 0.0038
 TIMEZONE = "Europe/Bratislava"
 
+MILESTONES = {
+    1000: "🥉",
+    5000: "🥈",
+    10000: "🥇",
+}
+
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -38,7 +44,7 @@ def get_conn():
 
 def init_db():
     with get_conn().cursor() as cur:
-        # Create base table if it doesn't exist
+        # Main games table
         cur.execute("""
         CREATE TABLE IF NOT EXISTS games (
             universe_id BIGINT PRIMARY KEY,
@@ -47,40 +53,44 @@ def init_db():
         );
         """)
 
-        # Old versions may still have place_id NOT NULL.
-        # Make sure the column exists as nullable if it exists at all.
+        # Migration safety for old schema that had place_id NOT NULL
         cur.execute("""
         ALTER TABLE games
         ADD COLUMN IF NOT EXISTS place_id BIGINT;
         """)
-
         cur.execute("""
         ALTER TABLE games
         ALTER COLUMN place_id DROP NOT NULL;
         """)
 
-        # Make sure robux_per_visit exists for old schemas
         cur.execute("""
         ALTER TABLE games
         ADD COLUMN IF NOT EXISTS robux_per_visit FLOAT;
         """)
-
-        # Fill any null robux_per_visit with 0 temporarily to satisfy NOT NULL upgrade
         cur.execute("""
         UPDATE games
         SET robux_per_visit = 0
         WHERE robux_per_visit IS NULL;
         """)
-
         cur.execute("""
         ALTER TABLE games
         ALTER COLUMN robux_per_visit SET NOT NULL;
         """)
 
+        # Baseline visits
         cur.execute("""
         CREATE TABLE IF NOT EXISTS visits_state (
             universe_id BIGINT PRIMARY KEY,
             visits BIGINT NOT NULL
+        );
+        """)
+
+        # Milestone hits
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS milestone_hits (
+            universe_id BIGINT NOT NULL,
+            milestone BIGINT NOT NULL,
+            PRIMARY KEY (universe_id, milestone)
         );
         """)
 
@@ -135,6 +145,25 @@ def set_previous_visits(universe_id: int, visits: int):
         """, (universe_id, visits))
 
 
+def milestone_exists(universe_id: int, milestone: int) -> bool:
+    with get_conn().cursor() as cur:
+        cur.execute("""
+            SELECT 1
+            FROM milestone_hits
+            WHERE universe_id = %s AND milestone = %s
+        """, (universe_id, milestone))
+        return cur.fetchone() is not None
+
+
+def save_milestone(universe_id: int, milestone: int):
+    with get_conn().cursor() as cur:
+        cur.execute("""
+            INSERT INTO milestone_hits (universe_id, milestone)
+            VALUES (%s, %s)
+            ON CONFLICT (universe_id, milestone) DO NOTHING
+        """, (universe_id, milestone))
+
+
 # ---------------- RORIZZ HELPERS ----------------
 
 def extract_rorizz_universe_id(link: str):
@@ -184,22 +213,31 @@ async def fetch_rorizz(session: aiohttp.ClientSession, universe_id: int):
         title = title_match.group(1).strip() if title_match else f"Game {universe_id}"
         title = title.replace(" - RoRizz", "").strip()
 
-        playing_match = (
-            re.search(r'([\d.,]+[KMBkmb]?)\s+Playing', html, re.IGNORECASE)
-            or re.search(r'Playing[^0-9]*([\d.,]+[KMBkmb]?)', html, re.IGNORECASE)
-        )
+        # Prefer JSON-like values first
+        json_playing = re.search(r'"playing"\s*:\s*(\d+)', html, re.IGNORECASE)
+        json_visits = re.search(r'"visits"\s*:\s*(\d+)', html, re.IGNORECASE)
 
-        visits_match = (
-            re.search(r'([\d.,]+[KMBkmb]?)\s+Visits', html, re.IGNORECASE)
-            or re.search(r'Visits[^0-9]*([\d.,]+[KMBkmb]?)', html, re.IGNORECASE)
-        )
+        # Fallback text patterns
+        text_playing = re.findall(r'([\d.,]+[KMBkmb]?)\s*Playing', html, re.IGNORECASE)
+        text_visits = re.findall(r'([\d.,]+[KMBkmb]?)\s*Visits', html, re.IGNORECASE)
 
-        if not visits_match and not playing_match:
-            print(f"RoRizz returned page but no stats found for {universe_id}")
+        if json_playing:
+            playing = int(json_playing.group(1))
+        elif text_playing:
+            playing = max(parse_compact_number(x) for x in text_playing)
+        else:
+            playing = 0
+
+        if json_visits:
+            visits = int(json_visits.group(1))
+        elif text_visits:
+            visits = max(parse_compact_number(x) for x in text_visits)
+        else:
+            visits = 0
+
+        if visits == 0 and playing == 0:
+            print(f"RoRizz returned page but no usable stats for {universe_id}")
             return None
-
-        playing = parse_compact_number(playing_match.group(1)) if playing_match else 0
-        visits = parse_compact_number(visits_match.group(1)) if visits_match else 0
 
         return {
             "name": title,
@@ -233,7 +271,7 @@ class AddGameModal(discord.ui.Modal, title="Add RoRizz Game"):
 
         if not universe_id:
             await interaction.response.send_message(
-                "❌ Please enter a valid RoRizz game link like `https://rorizz.com/g/9358783717/...`",
+                "❌ Please enter a valid RoRizz link like `https://rorizz.com/g/9358783717/...`",
                 ephemeral=True,
             )
             return
@@ -256,12 +294,26 @@ class AddGameModal(discord.ui.Modal, title="Add RoRizz Game"):
                 )
                 return
 
+        await interaction.response.defer(ephemeral=True)
+
+        # Optional live check before saving
+        async with aiohttp.ClientSession() as session:
+            data = await fetch_rorizz(session, universe_id)
+
+        if not data:
+            await interaction.followup.send(
+                "❌ That RoRizz page did not return usable stats. Make sure the game exists on RoRizz first.",
+                ephemeral=True,
+            )
+            return
+
         add_game_to_db(universe_id, link, rpv)
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"✅ Game added\n"
             f"🔗 {link}\n"
             f"🆔 Universe ID: `{universe_id}`\n"
+            f"🎮 Name: **{data['name']}**\n"
             f"💰 {rpv} robux/visit",
             ephemeral=True,
         )
@@ -424,21 +476,13 @@ async def ping(interaction: discord.Interaction):
     await interaction.response.send_message("✅ Bot is working!")
 
 
-@bot.tree.command(name="reportnow", description="Send the detailed earnings report right now")
+@bot.tree.command(name="reportnow", description="Show the detailed earnings report only to you")
 async def reportnow(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
     try:
         data = await build_report(update_baseline=False)
-        ch = bot.get_channel(REPORTNOW_CHANNEL_ID)
-
-        if ch is None:
-            await interaction.followup.send("❌ Report channel not found.", ephemeral=True)
-            return
-
-        await ch.send(data["full"])
-        await interaction.followup.send("✅ Detailed report sent.", ephemeral=True)
-
+        await interaction.followup.send(data["full"][:1900], ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"❌ Failed: `{e}`", ephemeral=True)
 
@@ -474,7 +518,7 @@ async def ccu(interaction: discord.Interaction):
     await interaction.followup.send(msg[:1900], ephemeral=True)
 
 
-# ---------------- DAILY REPORT ----------------
+# ---------------- AUTOMATIONS ----------------
 
 @tasks.loop(time=datetime.time(hour=22, minute=0, tzinfo=ZoneInfo(TIMEZONE)))
 async def daily():
@@ -496,6 +540,39 @@ async def before_daily():
     await bot.wait_until_ready()
 
 
+@tasks.loop(minutes=5)
+async def milestone_check():
+    channel = bot.get_channel(MILESTONE_CHANNEL_ID)
+    if channel is None:
+        print("Milestone channel not found.")
+        return
+
+    games = load_games()
+    if not games:
+        return
+
+    async with aiohttp.ClientSession() as session:
+        for game in games:
+            data = await fetch_rorizz(session, game["universe_id"])
+
+            if not data:
+                continue
+
+            ccu = int(data["playing"])
+
+            for milestone, emoji in sorted(MILESTONES.items()):
+                if ccu >= milestone and not milestone_exists(game["universe_id"], milestone):
+                    await channel.send(
+                        f"{emoji} {PROJECT_NAME} hit {milestone:,} CCU with {data['name']}"
+                    )
+                    save_milestone(game["universe_id"], milestone)
+
+
+@milestone_check.before_loop
+async def before_milestone_check():
+    await bot.wait_until_ready()
+
+
 # ---------------- START ----------------
 
 @bot.event
@@ -507,6 +584,9 @@ async def on_ready():
 
     if not daily.is_running():
         daily.start()
+
+    if not milestone_check.is_running():
+        milestone_check.start()
 
 
 if __name__ == "__main__":
