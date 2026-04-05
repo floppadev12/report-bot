@@ -1,5 +1,6 @@
 import os
 import re
+import html as html_lib
 import datetime
 from zoneinfo import ZoneInfo
 
@@ -138,6 +139,10 @@ def now_local():
     return datetime.datetime.now(ZoneInfo(TIMEZONE))
 
 
+def format_robux_whole(value: float) -> str:
+    return f"{int(round(value)):,}"
+
+
 async def fetch_rorizz(session: aiohttp.ClientSession, universe_id: int):
     url = f"https://rorizz.com/g/{universe_id}"
 
@@ -161,17 +166,17 @@ async def fetch_rorizz(session: aiohttp.ClientSession, universe_id: int):
                 print(f"RoRizz failed for {universe_id}: HTTP {resp.status}")
                 return None
 
-            html = await resp.text()
+            page_html = await resp.text()
 
-        title_match = re.search(r"<title>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
+        title_match = re.search(r"<title>(.*?)</title>", page_html, re.IGNORECASE | re.DOTALL)
         title = title_match.group(1).strip() if title_match else f"Game {universe_id}"
         title = re.sub(r"\s*[-—]\s*RoRizz\s*$", "", title).strip()
+        title = html_lib.unescape(title)
 
-        clean_text = re.sub(r"<script.*?</script>", " ", html, flags=re.IGNORECASE | re.DOTALL)
+        clean_text = re.sub(r"<script.*?</script>", " ", page_html, flags=re.IGNORECASE | re.DOTALL)
         clean_text = re.sub(r"<style.*?</style>", " ", clean_text, flags=re.IGNORECASE | re.DOTALL)
         clean_text = re.sub(r"<[^>]+>", " ", clean_text)
-        clean_text = re.sub(r"&nbsp;|&#160;", " ", clean_text)
-        clean_text = re.sub(r"&amp;", "&", clean_text)
+        clean_text = html_lib.unescape(clean_text)
         clean_text = re.sub(r"\s+", " ", clean_text).strip()
 
         def extract_stat(label: str):
@@ -185,12 +190,12 @@ async def fetch_rorizz(session: aiohttp.ClientSession, universe_id: int):
         playing = extract_stat("Playing")
 
         if visits is None:
-            m = re.search(r'"visits"\s*:\s*(\d+)', html, re.IGNORECASE)
+            m = re.search(r'"visits"\s*:\s*(\d+)', page_html, re.IGNORECASE)
             if m:
                 visits = int(m.group(1))
 
         if playing is None:
-            m = re.search(r'"playing"\s*:\s*(\d+)', html, re.IGNORECASE)
+            m = re.search(r'"playing"\s*:\s*(\d+)', page_html, re.IGNORECASE)
             if m:
                 playing = int(m.group(1))
 
@@ -212,6 +217,27 @@ async def fetch_rorizz(session: aiohttp.ClientSession, universe_id: int):
     except Exception as e:
         print(f"RoRizz error for {universe_id}: {e}")
         return None
+
+
+async def ensure_today_snapshots():
+    games = load_games()
+    if not games:
+        return
+
+    today = now_local().date()
+
+    async with aiohttp.ClientSession() as session:
+        for game in games:
+            existing = get_snapshot(game["universe_id"], today)
+            if existing is not None:
+                continue
+
+            data = await fetch_rorizz(session, game["universe_id"])
+            if not data:
+                continue
+
+            save_snapshot(game["universe_id"], today, int(data["visits"]))
+            print(f"Seeded today's snapshot for {game['universe_id']} = {data['visits']}")
 
 
 # ---------------- PANEL UI ----------------
@@ -263,10 +289,14 @@ class AddGameModal(discord.ui.Modal, title="Add RoRizz Game"):
 
         add_game_to_db(universe_id, link, robux_per_visit_value)
 
+        # Save today's snapshot immediately so tomorrow can compare
+        save_snapshot(universe_id, now_local().date(), int(data["visits"]))
+
         await interaction.followup.send(
             f"✅ Added **{data['name']}**\n"
             f"🆔 `{universe_id}`\n"
-            f"💰 Robux per visit: `{robux_per_visit_value}`",
+            f"💰 Robux per visit: `{robux_per_visit_value}`\n"
+            f"📸 Saved today's visit snapshot: `{int(data['visits']):,}`",
             ephemeral=True,
         )
 
@@ -507,6 +537,9 @@ async def on_ready():
     bot.add_view(PanelView())
     synced = await bot.tree.sync()
     print(f"READY - synced {len(synced)} slash command(s)")
+
+    # Bootstrap today's snapshot so tomorrow's report can work
+    await ensure_today_snapshots()
 
     if not daily_report.is_running():
         daily_report.start()
