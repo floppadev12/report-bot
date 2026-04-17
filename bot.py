@@ -17,6 +17,7 @@ PROJECT_NAME = "Project Floppa"
 REPORT_CHANNEL_ID = 1490317756136947942
 TIMEZONE = "Europe/Bratislava"
 USD_PER_ROBUX = 0.0038
+EMBED_COLOR = discord.Color.from_rgb(255, 255, 255)
 
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -508,6 +509,7 @@ async def panel(interaction: discord.Interaction):
             "• RoRizz link\n"
             "• Robux per visit"
         ),
+        color=EMBED_COLOR,
     )
     await interaction.response.send_message(embed=embed, view=PanelView())
 
