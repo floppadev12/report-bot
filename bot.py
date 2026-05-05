@@ -402,7 +402,7 @@ class PanelView(discord.ui.View):
 async def build_daily_earned_message_from_chart():
     games = load_games()
     if not games:
-        return "📭 No tracked games added yet."
+        return "📭 No tracked games added yet. Work harder."
 
     today = now_local().date()
     yesterday = today - datetime.timedelta(days=1)
