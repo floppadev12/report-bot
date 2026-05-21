@@ -8,7 +8,10 @@ from zoneinfo import ZoneInfo
 import aiohttp
 import discord
 import psycopg2
+from dotenv import load_dotenv
 from discord.ext import commands, tasks
+
+load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
