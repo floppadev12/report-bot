@@ -1,3 +1,4 @@
+import io
 import os
 import re
 import json
@@ -10,6 +11,7 @@ import discord
 import psycopg2
 from dotenv import load_dotenv
 from discord.ext import commands, tasks
+from PIL import Image, ImageDraw, ImageFont
 
 load_dotenv()
 
@@ -21,6 +23,18 @@ REPORT_CHANNEL_ID = 1490317756136947942
 TIMEZONE = "Europe/Bratislava"
 USD_PER_ROBUX = 0.0038
 EMBED_COLOR = discord.Color.from_rgb(255, 255, 255)
+
+INITIAL_DAILY_REPORTS = [
+    (datetime.date(2026, 6, 1), 251),
+    (datetime.date(2026, 6, 2), 438),
+    (datetime.date(2026, 6, 3), 337),
+    (datetime.date(2026, 6, 4), 393),
+    (datetime.date(2026, 6, 5), 520),
+    (datetime.date(2026, 6, 6), 694),
+    (datetime.date(2026, 6, 7), 885),
+    (datetime.date(2026, 6, 8), 570),
+    (datetime.date(2026, 6, 9), 500),
+]
 
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -47,6 +61,28 @@ def init_db():
             robux_per_visit DOUBLE PRECISION NOT NULL
         );
         """)
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS daily_reports (
+            report_date DATE PRIMARY KEY,
+            usd_amount INTEGER NOT NULL,
+            message_text TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        """)
+
+
+def seed_daily_reports():
+    with get_conn().cursor() as cur:
+        for report_date, usd_amount in INITIAL_DAILY_REPORTS:
+            cur.execute(
+                """
+                INSERT INTO daily_reports (report_date, usd_amount)
+                VALUES (%s, %s)
+                ON CONFLICT (report_date)
+                DO UPDATE SET usd_amount = EXCLUDED.usd_amount
+                """,
+                (report_date, usd_amount),
+            )
 
 
 def load_games():
@@ -85,6 +121,37 @@ def remove_game_by_universe_id(universe_id: int):
         cur.execute("DELETE FROM games WHERE universe_id = %s", (universe_id,))
 
 
+def save_daily_report(report_date: datetime.date, usd_amount: int, message_text: str | None = None):
+    with get_conn().cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO daily_reports (report_date, usd_amount, message_text)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (report_date)
+            DO UPDATE SET
+                usd_amount = EXCLUDED.usd_amount,
+                message_text = EXCLUDED.message_text
+            """,
+            (report_date, usd_amount, message_text),
+        )
+
+
+def load_daily_reports(start_date: datetime.date, end_date: datetime.date):
+    with get_conn().cursor() as cur:
+        cur.execute(
+            """
+            SELECT report_date, usd_amount
+            FROM daily_reports
+            WHERE report_date >= %s AND report_date < %s
+            ORDER BY report_date ASC
+            """,
+            (start_date, end_date),
+        )
+        rows = cur.fetchall()
+
+    return [{"report_date": row[0], "usd_amount": int(row[1])} for row in rows]
+
+
 # ---------------- HELPERS ----------------
 
 def extract_rorizz_universe_id(link: str):
@@ -117,12 +184,236 @@ def format_robux(value: float) -> str:
     return f"{int(round(value)):,}"
 
 
+def format_currency(value: int) -> str:
+    return f"${value:,}"
+
+
+def format_compact_currency(value: int) -> str:
+    if value >= 1_000_000:
+        return f"${value / 1_000_000:.1f}M".replace(".0M", "M")
+    if value >= 1_000:
+        return f"${value / 1_000:.1f}K".replace(".0K", "K")
+    return f"${value:,}"
+
+
+def format_day_label(day: datetime.date) -> str:
+    return f"{day.strftime('%b')} {day.day}"
+
+
 def chart_label_for_date(d: datetime.date) -> str:
     return d.strftime("%b %d")
 
 
 def normalize_chart_label(label: str) -> str:
     return re.sub(r"\s+", " ", label.strip())
+
+
+def month_range_for(day: datetime.date):
+    start = datetime.date(day.year, day.month, 1)
+    if day.month == 12:
+        end = datetime.date(day.year + 1, 1, 1)
+    else:
+        end = datetime.date(day.year, day.month + 1, 1)
+    return start, end
+
+
+def previous_month_range_for(day: datetime.date):
+    if day.month == 1:
+        prev_year = day.year - 1
+        prev_month = 12
+    else:
+        prev_year = day.year
+        prev_month = day.month - 1
+    prev_day = datetime.date(prev_year, prev_month, 1)
+    return month_range_for(prev_day)
+
+
+def load_font(size: int, bold: bool = False):
+    names = ["DejaVuSans-Bold.ttf", "DejaVuSans.ttf"] if bold else ["DejaVuSans.ttf", "DejaVuSans-Bold.ttf"]
+    for name in names:
+        try:
+            return ImageFont.truetype(name, size=size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def text_size(draw: ImageDraw.ImageDraw, text: str, font):
+    bbox = draw.textbbox((0, 0), text, font=font)
+    return bbox[2] - bbox[0], bbox[3] - bbox[1]
+
+
+def draw_centered_text(draw: ImageDraw.ImageDraw, box, text: str, font, fill):
+    x0, y0, x1, y1 = box
+    w, h = text_size(draw, text, font)
+    draw.text(((x0 + x1 - w) / 2, (y0 + y1 - h) / 2), text, font=font, fill=fill)
+
+
+def catmull_rom_path(points, samples_per_segment: int = 12):
+    if len(points) < 2:
+        return points[:]
+
+    curve = [points[0]]
+    for index in range(len(points) - 1):
+        p0 = points[index - 1] if index > 0 else points[index]
+        p1 = points[index]
+        p2 = points[index + 1]
+        p3 = points[index + 2] if index + 2 < len(points) else p2
+
+        for step in range(1, samples_per_segment + 1):
+            t = step / samples_per_segment
+            t2 = t * t
+            t3 = t2 * t
+
+            x = 0.5 * (
+                (2 * p1[0])
+                + (-p0[0] + p2[0]) * t
+                + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2
+                + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3
+            )
+            y = 0.5 * (
+                (2 * p1[1])
+                + (-p0[1] + p2[1]) * t
+                + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2
+                + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3
+            )
+            curve.append((x, y))
+
+    return curve
+
+
+def render_monthly_dashboard_image(current_reports, previous_reports, month_start: datetime.date, month_end: datetime.date):
+    width, height = 638, 452
+    img = Image.new("RGB", (width, height), "#ffffff")
+    draw = ImageDraw.Draw(img)
+
+    title_font = load_font(18, bold=False)
+    value_font = load_font(42, bold=True)
+    percent_font = load_font(18, bold=True)
+    axis_font = load_font(13, bold=False)
+    legend_font = load_font(15, bold=False)
+    small_font = load_font(12, bold=False)
+
+    border = "#d9d9d9"
+    text = "#222222"
+    muted = "#666666"
+    grid = "#ebebeb"
+    blue = "#2da8e0"
+    blue_light = "#cdeaf7"
+    green = "#1f7a46"
+
+    draw.rounded_rectangle((1, 1, width - 2, height - 2), radius=18, outline=border, width=1)
+
+    draw.text((24, 22), "Total sales", font=title_font, fill=text)
+    draw.line((24, 48, 110, 48), fill=grid, width=1)
+
+    total_current = sum(item["usd_amount"] for item in current_reports)
+    total_previous = sum(item["usd_amount"] for item in previous_reports) if previous_reports else None
+
+    draw.text((24, 76), format_currency(total_current), font=value_font, fill=text)
+
+    if total_previous and total_previous > 0:
+        change = ((total_current - total_previous) / total_previous) * 100
+        change_text = f"↗ {change:.0f}%"
+        change_color = green if change >= 0 else "#c0392b"
+    else:
+        change_text = "N/A"
+        change_color = muted
+
+    draw.text((245, 88), change_text, font=percent_font, fill=change_color)
+
+    # Small decorative icon in the corner.
+    icon_x, icon_y = 585, 18
+    draw.rounded_rectangle((icon_x, icon_y, icon_x + 28, icon_y + 28), radius=6, outline=border, width=1)
+    draw.ellipse((icon_x + 6, icon_y + 7, icon_x + 14, icon_y + 15), outline=muted, width=2)
+    draw.line((icon_x + 13, icon_y + 14, icon_x + 20, icon_y + 21), fill=muted, width=2)
+
+    chart_left, chart_top, chart_right, chart_bottom = 76, 150, 598, 353
+    chart_width = chart_right - chart_left
+    chart_height = chart_bottom - chart_top
+
+    max_value = max([0] + [item["usd_amount"] for item in current_reports] + [item["usd_amount"] for item in previous_reports])
+    if max_value <= 0:
+        max_value = 1
+    if max_value <= 500:
+        scale_max = max(100, ((max_value + 49) // 50) * 50)
+    elif max_value <= 1_000:
+        scale_max = ((max_value + 99) // 100) * 100
+    elif max_value <= 5_000:
+        scale_max = ((max_value + 249) // 250) * 250
+    else:
+        scale_max = ((max_value + 499) // 500) * 500
+    if scale_max < max_value:
+        scale_max = max_value
+
+    y_ticks = [0, scale_max / 2, scale_max]
+    for tick in y_ticks:
+        y = chart_bottom - (tick / scale_max) * chart_height
+        draw.line((chart_left, y, chart_right, y), fill=grid, width=1)
+        label = format_compact_currency(int(round(tick))) if tick else "$0"
+        tw, th = text_size(draw, label, axis_font)
+        draw.text((chart_left - tw - 10, y - th / 2), label, font=axis_font, fill=muted)
+
+    def build_series(points):
+        if not points:
+            return []
+        count = max(len(points), 1)
+        step = chart_width / max(count - 1, 1)
+        coords = []
+        for idx, item in enumerate(points):
+            value = item["usd_amount"]
+            x = chart_left + idx * step
+            y = chart_bottom - (value / scale_max) * chart_height
+            coords.append((x, y))
+        return coords
+
+    current_points = build_series(current_reports)
+    previous_points = build_series(previous_reports)
+
+    if previous_points:
+        previous_curve = catmull_rom_path(previous_points)
+        if len(previous_curve) > 1:
+            draw.line(previous_curve, fill=blue_light, width=3)
+
+    if current_points:
+        current_curve = catmull_rom_path(current_points)
+        if len(current_curve) > 1:
+            draw.line(current_curve, fill=blue, width=4)
+        for x, y in current_points:
+            draw.ellipse((x - 2, y - 2, x + 2, y + 2), fill=blue, outline=blue)
+
+    if current_reports:
+        first_label = format_day_label(current_reports[0]["report_date"])
+        mid_label = format_day_label(current_reports[len(current_reports) // 2]["report_date"])
+        last_label = format_day_label(current_reports[-1]["report_date"])
+    else:
+        first_label = format_day_label(month_start)
+        mid_label = format_day_label(month_start)
+        last_label = format_day_label(month_end)
+
+    x_labels = [
+        (chart_left, first_label),
+        (chart_left + chart_width / 2, mid_label),
+        (chart_right, last_label),
+    ]
+    for x, label in x_labels:
+        tw, _ = text_size(draw, label, axis_font)
+        draw.text((x - tw / 2, chart_bottom + 10), label, font=axis_font, fill=muted)
+
+    draw.text((24, 372), month_start.strftime("%b %Y"), font=legend_font, fill=text)
+    draw.ellipse((24, 404, 29, 409), fill=blue, outline=blue)
+    draw.text((40, 398), month_start.strftime("%b %Y"), font=legend_font, fill=muted)
+
+    if previous_reports:
+        draw.line((175, 406, 192, 406), fill=blue_light, width=3)
+        draw.text((200, 398), previous_reports[0]["report_date"].replace(day=1).strftime("%b %Y"), font=legend_font, fill=muted)
+    else:
+        draw.text((175, 398), "Previous month data not available", font=small_font, fill=muted)
+
+    output = io.BytesIO()
+    img.save(output, format="PNG")
+    output.seek(0)
+    return output
 
 
 def extract_title(page_html: str, universe_id: int) -> str:
@@ -405,7 +696,7 @@ class PanelView(discord.ui.View):
 async def build_daily_earned_message_from_chart():
     games = load_games()
     if not games:
-        return "📭 No tracked games added yet. Work harder."
+        return None, None
 
     today = now_local().date()
     yesterday = today - datetime.timedelta(days=1)
@@ -434,10 +725,10 @@ async def build_daily_earned_message_from_chart():
             found_any = True
 
     if not found_any:
-        return "⚠️ Could not read visits chart data from RoRizz."
+        return None, None
 
     rounded_usd = int(round(total_usd))
-    return f"🏆 {PROJECT_NAME} just earned ${rounded_usd:,}"
+    return f"🏆 {PROJECT_NAME} just earned ${rounded_usd:,}", rounded_usd
 
 
 async def build_previous_day_breakdown_from_chart():
@@ -500,6 +791,14 @@ async def build_previous_day_breakdown_from_chart():
     return header + "\n".join(lines)
 
 
+def get_monthly_report_data(target_date: datetime.date):
+    month_start, month_end = month_range_for(target_date)
+    current_reports = load_daily_reports(month_start, min(target_date + datetime.timedelta(days=1), month_end))
+    prev_start, prev_end = previous_month_range_for(target_date)
+    previous_reports = load_daily_reports(prev_start, prev_end)
+    return month_start, month_end, current_reports, previous_reports
+
+
 # ---------------- COMMANDS ----------------
 
 @bot.tree.command(name="panel", description="Open control panel")
@@ -527,7 +826,13 @@ async def reportnow(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
     try:
-        msg = await build_daily_earned_message_from_chart()
+        msg, usd_amount = await build_daily_earned_message_from_chart()
+        if not msg or usd_amount is None:
+            await interaction.followup.send("⚠️ Could not build today's earnings message.", ephemeral=True)
+            return
+
+        report_date = now_local().date() - datetime.timedelta(days=1)
+        save_daily_report(report_date, usd_amount, msg)
         await interaction.followup.send(msg, ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"❌ Failed: `{e}`", ephemeral=True)
@@ -544,6 +849,35 @@ async def prev(interaction: discord.Interaction):
         await interaction.followup.send(f"❌ Failed: `{e}`", ephemeral=True)
 
 
+@bot.tree.command(name="monthly", description="Generate a monthly sales dashboard image")
+async def monthly(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    try:
+        target_date = now_local().date()
+        month_start, month_end, current_reports, previous_reports = get_monthly_report_data(target_date)
+
+        if not current_reports:
+            await interaction.followup.send("📭 No saved report data yet.", ephemeral=True)
+            return
+
+        image_buffer = render_monthly_dashboard_image(current_reports, previous_reports, month_start, month_end)
+        total_current = sum(item["usd_amount"] for item in current_reports)
+        total_previous = sum(item["usd_amount"] for item in previous_reports) if previous_reports else None
+        if total_previous and total_previous > 0:
+            change = ((total_current - total_previous) / total_previous) * 100
+            summary = f"Current month total: ${total_current:,} ({change:+.0f}% vs previous month)"
+        else:
+            summary = f"Current month total: ${total_current:,}"
+
+        file = discord.File(image_buffer, filename="monthly-dashboard.png")
+        embed = discord.Embed(description=summary, color=EMBED_COLOR)
+        embed.set_image(url="attachment://monthly-dashboard.png")
+        await interaction.followup.send(embed=embed, file=file, ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Failed: `{e}`", ephemeral=True)
+
+
 # ---------------- DAILY TASK ----------------
 
 @tasks.loop(time=datetime.time(hour=8, minute=30, tzinfo=ZoneInfo(TIMEZONE)))
@@ -554,7 +888,13 @@ async def daily_report():
         return
 
     try:
-        msg = await build_daily_earned_message_from_chart()
+        msg, usd_amount = await build_daily_earned_message_from_chart()
+        if not msg or usd_amount is None:
+            print("Daily report could not be built.")
+            return
+
+        report_date = now_local().date() - datetime.timedelta(days=1)
+        save_daily_report(report_date, usd_amount, msg)
         await channel.send(msg)
         print("Daily report sent.")
     except Exception as e:
@@ -571,6 +911,7 @@ async def before_daily_report():
 @bot.event
 async def on_ready():
     init_db()
+    seed_daily_reports()
     bot.add_view(PanelView())
     synced = await bot.tree.sync()
     print(f"READY - synced {len(synced)} slash command(s)")

@@ -2,3 +2,4 @@ discord.py
 aiohttp
 psycopg2-binary
 python-dotenv
+Pillow
