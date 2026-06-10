@@ -3,3 +3,4 @@ aiohttp
 psycopg2-binary
 python-dotenv
 Pillow
+tzdata
