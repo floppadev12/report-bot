@@ -172,6 +172,21 @@ def load_latest_report_date():
     return row[0] if row and row[0] else None
 
 
+def fill_report_range(start_date: datetime.date, end_date: datetime.date, reports):
+    by_date = {item["report_date"]: item["usd_amount"] for item in reports}
+    days = []
+    current = start_date
+
+    while current < end_date:
+        days.append({
+            "report_date": current,
+            "usd_amount": int(by_date.get(current, 0)),
+        })
+        current += datetime.timedelta(days=1)
+
+    return days
+
+
 # ---------------- HELPERS ----------------
 
 def extract_rorizz_universe_id(link: str):
@@ -737,9 +752,9 @@ async def revenue_api(request):
         days = 14
 
     days = max(1, min(days, 30))
-    latest_date = load_latest_report_date()
+    latest_date = now_local().date()
 
-    if latest_date is None:
+    if load_latest_report_date() is None:
         return web.json_response({
             "project": PROJECT_NAME,
             "days": days,
@@ -753,8 +768,16 @@ async def revenue_api(request):
     current_end = latest_date + datetime.timedelta(days=1)
     previous_start = current_start - datetime.timedelta(days=days)
 
-    current_reports = load_daily_reports(current_start, current_end)
-    previous_reports = load_daily_reports(previous_start, current_start)
+    current_reports = fill_report_range(
+        current_start,
+        current_end,
+        load_daily_reports(current_start, current_end),
+    )
+    previous_reports = fill_report_range(
+        previous_start,
+        current_start,
+        load_daily_reports(previous_start, current_start),
+    )
     all_reports = load_daily_reports(datetime.date(1970, 1, 1), current_end)
 
     return web.json_response({
