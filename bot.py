@@ -827,7 +827,7 @@ async def reportnow(interaction: discord.Interaction):
             await interaction.followup.send("âš ï¸ Could not build today's earnings message.", ephemeral=True)
             return
 
-        report_date = now_local().date() - datetime.timedelta(days=1)
+        report_date = now_local().date()
         save_daily_report(report_date, usd_amount, msg)
         await interaction.followup.send(msg, ephemeral=True)
     except Exception as e:
@@ -860,7 +860,7 @@ async def daily_report():
             print("Daily report could not be built.")
             return
 
-        report_date = now_local().date() - datetime.timedelta(days=1)
+        report_date = now_local().date()
         save_daily_report(report_date, usd_amount, msg)
         await channel.send(msg)
         print("Daily report sent.")
