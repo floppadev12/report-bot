@@ -187,6 +187,37 @@ def fill_report_range(start_date: datetime.date, end_date: datetime.date, report
     return days
 
 
+def load_recent_daily_reports(limit: int, before_date: datetime.date | None = None):
+    with get_conn().cursor() as cur:
+        if before_date is None:
+            cur.execute(
+                """
+                SELECT report_date, usd_amount
+                FROM daily_reports
+                ORDER BY report_date DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT report_date, usd_amount
+                FROM daily_reports
+                WHERE report_date < %s
+                ORDER BY report_date DESC
+                LIMIT %s
+                """,
+                (before_date, limit),
+            )
+        rows = cur.fetchall()
+
+    return [
+        {"report_date": row[0], "usd_amount": int(row[1])}
+        for row in reversed(rows)
+    ]
+
+
 # ---------------- HELPERS ----------------
 
 def extract_rorizz_universe_id(link: str):
@@ -752,9 +783,9 @@ async def revenue_api(request):
         days = 14
 
     days = max(1, min(days, 30))
-    latest_date = now_local().date()
+    latest_date = load_latest_report_date()
 
-    if load_latest_report_date() is None:
+    if latest_date is None:
         return web.json_response({
             "project": PROJECT_NAME,
             "days": days,
@@ -764,20 +795,9 @@ async def revenue_api(request):
             "summary": summarize_reports([], []),
         })
 
-    current_start = latest_date - datetime.timedelta(days=days - 1)
+    current_reports = load_recent_daily_reports(days)
+    previous_reports = load_recent_daily_reports(days, current_reports[0]["report_date"])
     current_end = latest_date + datetime.timedelta(days=1)
-    previous_start = current_start - datetime.timedelta(days=days)
-
-    current_reports = fill_report_range(
-        current_start,
-        current_end,
-        load_daily_reports(current_start, current_end),
-    )
-    previous_reports = fill_report_range(
-        previous_start,
-        current_start,
-        load_daily_reports(previous_start, current_start),
-    )
     all_reports = load_daily_reports(datetime.date(1970, 1, 1), current_end)
 
     return web.json_response({
