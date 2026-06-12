@@ -729,6 +729,8 @@ async def revenue_api(request):
     if not dashboard_is_authenticated(request):
         return web.json_response({"error": "Unauthorized"}, status=401)
 
+    seed_daily_reports()
+
     try:
         days = int(request.query.get("days", "14"))
     except ValueError:
