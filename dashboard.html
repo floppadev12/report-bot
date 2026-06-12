@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Clover Revenue Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  :root{
+    --bg:#f2f4f7;--card:#fff;--line:#d8d8d8;--grid:#eceeef;--text:#272b30;
+    --muted:#6b7178;--blue:#22aee8;--green:#2e8d5f;--control:#555b62;
+    --soft-blue:rgba(34,174,232,.12);--shadow:rgba(0,0,0,.55);--soft:rgba(0,0,0,.08);
+    --tooltip-bg:#272b30;--tooltip-text:#fff;--row:#f0f1f2;
+  }
+  body.dark{
+    --bg:#111316;--card:#181b20;--line:#30343a;--grid:#2a2f35;--text:#eef1f4;
+    --muted:#9aa2ad;--control:#d6dbe1;--soft-blue:rgba(34,174,232,.18);
+    --shadow:rgba(0,0,0,.85);--soft:rgba(0,0,0,.26);--tooltip-bg:#f7f9fb;
+    --tooltip-text:#15181c;--row:#252a30;
+  }
+  body{
+    margin:0;min-height:100vh;background:var(--bg);color:var(--text);
+    font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    scrollbar-color:#b8c0ca var(--bg);
+  }
+  body.dark{scrollbar-color:#3c434c var(--bg)}
+  ::-webkit-scrollbar{width:12px;height:12px}
+  ::-webkit-scrollbar-track{background:var(--bg)}
+  ::-webkit-scrollbar-thumb{background:#b8c0ca;border:3px solid var(--bg);border-radius:999px}
+  body.dark ::-webkit-scrollbar-thumb{background:#3c434c}
+  .page{width:min(1180px,calc(100vw - 48px));margin:38px auto}
+  .topbar{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:22px}
+  h1{margin:0;font-size:31px;line-height:1;font-weight:760;letter-spacing:-.4px}
+  .subtitle{margin:9px 0 0;color:var(--muted);font-size:15px}
+  .actions{display:flex;align-items:center;gap:12px}
+  .status,.theme-toggle,.metric,.chart-card,.table-card{
+    background:var(--card);border:1px solid var(--line);box-shadow:0 2px 0 var(--shadow),0 12px 28px var(--soft);
+  }
+  .status{display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:8px;color:var(--control);font-size:14px;white-space:nowrap}
+  .pulse{width:9px;height:9px;border-radius:999px;background:var(--green);box-shadow:0 0 0 4px rgba(46,141,95,.14)}
+  .theme-toggle{width:42px;height:42px;display:grid;place-items:center;color:var(--control);border-radius:8px;cursor:pointer}
+  .theme-toggle svg{width:20px;height:20px}.sun{display:none}body.dark .moon{display:none}body.dark .sun{display:block}
+  .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:16px}
+  .metric{min-height:120px;padding:22px;border-radius:12px;position:relative}
+  .metric-label{color:var(--muted);font-size:14px;font-weight:650}
+  .metric-value{margin-top:14px;font-size:34px;line-height:1;font-weight:730;letter-spacing:-.8px}
+  .metric-note{margin-top:13px;color:var(--green);font-size:14px;font-weight:700}
+  .main{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:16px}
+  .chart-card{min-height:520px;border-radius:12px;position:relative;overflow:hidden}
+  .chart-title{position:absolute;top:24px;left:29px;font-size:24px;line-height:1;font-weight:650}
+  .chart-dots{position:absolute;top:58px;left:29px;width:64px;border-bottom:4px dotted #cfd3d7}
+  .chart-amount{position:absolute;top:80px;left:32px;font-size:38px;line-height:1;font-weight:730;letter-spacing:-1.2px}
+  .chart-growth{position:absolute;top:92px;left:204px;color:var(--green);font-size:19px;font-weight:730}
+  .chart-growth::before{content:"↗";font-size:18px;margin-right:6px}
+  .filter{position:absolute;top:22px;right:24px;z-index:3;display:flex;border:1px solid #dfe2e5;border-radius:8px;background:var(--card);color:var(--control);font-size:14px;font-weight:650;overflow:hidden}
+  .filter select{appearance:none;border:0;outline:0;background:transparent;color:inherit;font:inherit;cursor:pointer;padding:9px 31px 9px 12px}
+  .filter::after{content:"";width:7px;height:7px;border-right:2px solid currentColor;border-bottom:2px solid currentColor;position:absolute;right:12px;top:12px;transform:rotate(45deg);pointer-events:none}
+  svg.chart{position:absolute;inset:0;width:100%;height:520px;z-index:1}
+  .axis{fill:var(--muted);font-size:16px}.legend{position:absolute;left:118px;bottom:31px;z-index:2;display:flex;gap:28px;color:var(--muted);font-size:16px}
+  .legend-item{display:flex;align-items:center;gap:10px;white-space:nowrap}.legend-line{width:24px;border-top:3px solid var(--blue)}.legend-dots{width:24px;border-top:3px dotted rgba(37,174,234,.32)}
+  .marker{opacity:0;pointer-events:none}.chart-card.hover .marker{opacity:1}.hover-line{stroke:var(--blue);stroke-width:1.5;stroke-opacity:.42;stroke-dasharray:4 5}.hover-dot{fill:var(--card);stroke:var(--blue);stroke-width:3}
+  .tooltip{position:fixed;z-index:20;min-width:132px;padding:10px 12px;border-radius:8px;background:var(--tooltip-bg);color:var(--tooltip-text);box-shadow:0 12px 28px rgba(0,0,0,.18);pointer-events:none;opacity:0;transform:translate(14px,14px)}
+  .tooltip.show{opacity:1}.tooltip-date{font-size:13px;font-weight:700}.tooltip-amount{margin-top:4px;font-size:20px;line-height:1;font-weight:780}
+  .table-card{min-height:520px;border-radius:12px;padding:24px 0 18px;overflow:hidden}
+  .table-head{padding:0 24px 18px;border-bottom:1px solid var(--row)}.table-title{margin:0;font-size:23px;line-height:1;font-weight:720}.table-subtitle{margin:9px 0 0;color:var(--muted);font-size:14px}
+  .badge{display:inline-flex;margin-top:18px;padding:9px 11px;border-radius:8px;background:var(--soft-blue);color:#177da9;font-size:13px;font-weight:700}
+  #entries{max-height:397px;overflow:auto;scrollbar-color:#b8c0ca var(--card)}body.dark #entries{scrollbar-color:#3c434c var(--card)}
+  #entries::-webkit-scrollbar-track{background:var(--card)}#entries::-webkit-scrollbar-thumb{border-color:var(--card)}
+  .entry{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center;padding:16px 24px;border-bottom:1px solid var(--row)}
+  .entry-date{font-size:15px;font-weight:700}.entry-source{margin-top:5px;color:var(--muted);font-size:13px}.entry-amount{font-size:19px;font-weight:760}
+  @media(max-width:960px){.metrics{grid-template-columns:repeat(2,1fr)}.main{grid-template-columns:1fr}}
+  @media(max-width:640px){.page{width:calc(100vw - 24px);margin:22px auto}.topbar{align-items:flex-start;flex-direction:column}.actions{width:100%;justify-content:space-between}.metrics{grid-template-columns:1fr}.legend{left:24px;right:24px;bottom:22px;flex-wrap:wrap}}
+</style>
+</head>
+<body>
+<main class="page">
+  <header class="topbar">
+    <div><h1>Clover Revenue</h1><p class="subtitle">Project Floppa daily earnings from Discord reports.</p></div>
+    <div class="actions">
+      <button class="theme-toggle" id="theme" type="button" aria-label="Switch theme">
+        <svg class="moon" viewBox="0 0 24 24" fill="none"><path d="M21 14.4A8.3 8.3 0 0 1 9.6 3 8.7 8.7 0 1 0 21 14.4Z" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <svg class="sun" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="4.3" stroke="currentColor" stroke-width="2.2"/><path d="M12 2.5v2.2M12 19.3v2.2M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.6 19.4l1.6-1.6M17.8 6.2l1.6-1.6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+      </button>
+      <div class="status"><span class="pulse"></span><span id="lastPost">Loading reports...</span></div>
+    </div>
+  </header>
+  <section class="metrics">
+    <article class="metric"><div class="metric-label">Total tracked</div><div class="metric-value" id="allTotal">$0</div><div class="metric-note" id="allNote">0 daily messages</div></article>
+    <article class="metric"><div class="metric-label">Latest</div><div class="metric-value" id="latestAmount">$0</div><div class="metric-note" id="latestNote">No report yet</div></article>
+    <article class="metric"><div class="metric-label">Daily average</div><div class="metric-value" id="average">$0</div><div class="metric-note" id="averageNote">Based on selected range</div></article>
+    <article class="metric"><div class="metric-label">Best day</div><div class="metric-value" id="best">$0</div><div class="metric-note" id="bestNote">No report yet</div></article>
+  </section>
+  <section class="main">
+    <article class="chart-card" id="chartCard">
+      <div class="chart-title">Daily revenue</div><div class="chart-dots"></div><div class="chart-amount" id="chartTotal">$0</div><div class="chart-growth" id="growth">New</div>
+      <label class="filter"><select id="range"><option value="1">Last 1 day</option><option value="7">Last 7 days</option><option value="14" selected>Last 14 days</option><option value="30">Last 30 days</option></select></label>
+      <svg class="chart" id="chart" viewBox="0 0 780 520" aria-hidden="true">
+        <defs><linearGradient id="area" x1="0" y1="150" x2="0" y2="396" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#2bb2e9" stop-opacity=".16"/><stop offset="1" stop-color="#2bb2e9" stop-opacity=".02"/></linearGradient><clipPath id="clip"><rect x="78" y="148" width="660" height="248"/></clipPath></defs>
+        <line x1="92" x2="738" y1="148" y2="148" stroke="var(--grid)" stroke-width="1.5"/><line x1="92" x2="738" y1="230" y2="230" stroke="var(--grid)" stroke-width="1.5"/><line x1="92" x2="738" y1="313" y2="313" stroke="var(--grid)" stroke-width="1.5"/><line x1="92" x2="738" y1="396" y2="396" stroke="var(--grid)" stroke-width="1.5"/>
+        <text class="axis" id="y3" x="29" y="154">$0</text><text class="axis" id="y2" x="29" y="236">$0</text><text class="axis" id="y1" x="29" y="319">$0</text><text class="axis" x="39" y="402">$0</text>
+        <text class="axis" id="x0" x="82" y="430"></text><text class="axis" id="x1" x="246" y="430"></text><text class="axis" id="x2" x="424" y="430"></text><text class="axis" id="x3" x="610" y="430"></text>
+        <g clip-path="url(#clip)"><path id="prevLine" fill="none" stroke="#27aee9" stroke-opacity=".25" stroke-width="3.2" stroke-linecap="round" stroke-dasharray="1 7"/><path id="areaPath" fill="url(#area)"/><path id="linePath" fill="none" stroke="#22aee8" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/></g>
+        <g class="marker" id="marker"><line class="hover-line" id="hoverLine" x1="78" x2="78" y1="148" y2="396"/><circle class="hover-dot" id="hoverDot" cx="78" cy="292" r="6"/></g>
+      </svg>
+      <div class="legend"><div class="legend-item"><span class="legend-line"></span><span id="currentLegend">Current 14 days</span></div><div class="legend-item"><span class="legend-dots"></span><span id="previousLegend">Previous period</span></div></div>
+      <div class="tooltip" id="tooltip"><div class="tooltip-date" id="tooltipDate"></div><div class="tooltip-amount" id="tooltipAmount"></div></div>
+    </article>
+    <aside class="table-card"><div class="table-head"><h2 class="table-title">Recent entries</h2><p class="table-subtitle">Saved by the Discord bot.</p><span class="badge" id="project">Project Floppa</span></div><div id="entries"></div></aside>
+  </section>
+</main>
+<script>
+const $=id=>document.getElementById(id), plot={left:78,right:738,top:148,bottom:396};
+let current=[], previous=[], maxValue=100;
+if(localStorage.getItem("clover-theme")==="dark")document.body.classList.add("dark");
+$("theme").onclick=()=>{document.body.classList.toggle("dark");localStorage.setItem("clover-theme",document.body.classList.contains("dark")?"dark":"light")};
+function money(v){return "$"+Math.round(v||0).toLocaleString()}
+function shortDate(iso){const d=new Date(iso+"T00:00:00");return d.toLocaleDateString("en-US",{month:"short",day:"numeric"})}
+function fullDate(iso){const d=new Date(iso+"T00:00:00");return d.toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"})}
+function niceMax(v){return Math.max(100,Math.ceil((v*1.08)/100)*100)}
+function pts(items,max){const den=Math.max(1,items.length-1);return items.map((it,i)=>({x:items.length===1?plot.left+(plot.right-plot.left)/2:plot.left+(plot.right-plot.left)*(i/den),y:plot.bottom-(it.amount/max)*(plot.bottom-plot.top)}))}
+function path(points){if(!points.length)return "";if(points.length===1)return `M${points[0].x-1} ${points[0].y} L${points[0].x+1} ${points[0].y}`;let d=`M${points[0].x} ${points[0].y}`;for(let i=0;i<points.length-1;i++){const c=points[i],n=points[i+1],p=points[i-1]||c,a=points[i+2]||n;d+=` C${c.x+(n.x-p.x)/6} ${c.y+(n.y-p.y)/6},${n.x-(a.x-c.x)/6} ${n.y-(a.y-c.y)/6},${n.x} ${n.y}`}return d}
+function area(points){if(!points.length)return "";if(points.length===1)return `M${points[0].x-1} ${points[0].y} L${points[0].x+1} ${points[0].y} L${points[0].x+1} ${plot.bottom} L${points[0].x-1} ${plot.bottom} Z`;return `${path(points)} L${points[points.length-1].x} ${plot.bottom} L${points[0].x} ${plot.bottom} Z`}
+async function load(){const days=$("range").value;const res=await fetch(`/api/revenue?days=${days}`);const data=await res.json();current=data.current;previous=data.previous;maxValue=niceMax(Math.max(0,...current.map(x=>x.amount),...previous.map(x=>x.amount)));render(data)}
+function render(data){const p=pts(current,maxValue), pp=pts(previous,maxValue);$("linePath").setAttribute("d",path(p));$("areaPath").setAttribute("d",area(p));$("prevLine").setAttribute("d",path(pp));$("prevLine").style.opacity=pp.length?"1":"0";$("chartTotal").textContent=money(data.summary.total);$("growth").textContent=data.summary.growth===null?"New":Math.abs(data.summary.growth).toFixed(1)+"%";$("growth").style.color=data.summary.growth===null||data.summary.growth>=0?"var(--green)":"#d14b4b";$("average").textContent=money(data.summary.average);$("averageNote").textContent=data.summary.count+" entries selected";$("best").textContent=money(data.summary.best?.amount||0);$("bestNote").textContent=data.summary.best?shortDate(data.summary.best.date):"No report yet";$("project").textContent=data.project;$("currentLegend").textContent="Current "+data.days+(data.days==1?" day":" days");$("previousLegend").textContent=previous.length?"Previous period":"No prior period";$("y1").textContent=money(maxValue/3);$("y2").textContent=money(maxValue/3*2);$("y3").textContent=money(maxValue);const idx=current.length===1?[0,0,0,0]:[0,Math.floor((current.length-1)/3),Math.floor((current.length-1)/3*2),current.length-1];["x0","x1","x2","x3"].forEach((id,i)=>$(id).textContent=current[idx[i]]?shortDate(current[idx[i]].date):"");const all=data.all||[],allTotal=all.reduce((a,b)=>a+b.amount,0);$("allTotal").textContent=money(allTotal);$("allNote").textContent=all.length+" daily messages";const latest=all[all.length-1]||current[current.length-1];$("latestAmount").textContent=money(latest?.amount||0);$("latestNote").textContent=latest?shortDate(latest.date):"No report yet";$("lastPost").textContent=latest?"Last saved report: "+fullDate(latest.date):"No reports saved yet";$("entries").innerHTML=current.slice().reverse().map(x=>`<div class="entry"><div><div class="entry-date">${fullDate(x.date)}</div><div class="entry-source">Saved Discord report</div></div><div class="entry-amount">${money(x.amount)}</div></div>`).join("")}
+function hover(e){if(!current.length)return;const r=$("chart").getBoundingClientRect(),x=(e.clientX-r.left)*(780/r.width),y=(e.clientY-r.top)*(520/r.height);if(x<plot.left||x>plot.right||y<plot.top||y>plot.bottom)return hide();const i=current.length===1?0:Math.max(0,Math.min(current.length-1,Math.round(((x-plot.left)/(plot.right-plot.left))*(current.length-1))));const point=pts(current,maxValue)[i],it=current[i];$("hoverLine").setAttribute("x1",point.x);$("hoverLine").setAttribute("x2",point.x);$("hoverDot").setAttribute("cx",point.x);$("hoverDot").setAttribute("cy",point.y);$("tooltipDate").textContent=fullDate(it.date);$("tooltipAmount").textContent=money(it.amount);$("tooltip").style.left=e.clientX+"px";$("tooltip").style.top=e.clientY+"px";$("tooltip").classList.add("show");$("chartCard").classList.add("hover")}
+function hide(){$("tooltip").classList.remove("show");$("chartCard").classList.remove("hover")}
+$("range").onchange=load;$("chart").onmousemove=hover;$("chart").onmouseleave=hide;load();
+</script>
+</body>
+</html>
