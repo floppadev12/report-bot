@@ -17,6 +17,9 @@ load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 PORT = int(os.getenv("PORT", "8080"))
+DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "f123")
+DASHBOARD_COOKIE_NAME = "clover_dashboard_auth"
+DASHBOARD_COOKIE_VALUE = os.getenv("DASHBOARD_COOKIE_VALUE", "clover-dashboard-ok")
 
 PROJECT_NAME = "Project Floppa"
 REPORT_CHANNEL_ID = 1490317756136947942
@@ -583,6 +586,115 @@ async def build_previous_day_breakdown_from_chart():
 
 # ---------------- WEB DASHBOARD ----------------
 
+def dashboard_is_authenticated(request):
+    return request.cookies.get(DASHBOARD_COOKIE_NAME) == DASHBOARD_COOKIE_VALUE
+
+
+def login_html(error: str | None = None):
+    error_markup = f'<div class="error">{error}</div>' if error else ""
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Clover Dashboard Login</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap" rel="stylesheet">
+<style>
+  *{{box-sizing:border-box}}
+  body{{
+    margin:0;
+    min-height:100vh;
+    display:grid;
+    place-items:center;
+    background:#f2f4f7;
+    color:#272b30;
+    font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  }}
+  .card{{
+    width:min(390px,calc(100vw - 32px));
+    background:#fff;
+    border:1px solid #d8d8d8;
+    border-radius:12px;
+    box-shadow:0 2px 0 rgba(0,0,0,.55),0 12px 28px rgba(0,0,0,.08);
+    padding:28px;
+  }}
+  h1{{margin:0;font-size:25px;line-height:1;font-weight:760;letter-spacing:-.3px}}
+  p{{margin:10px 0 24px;color:#6b7178;font-size:14px}}
+  label{{display:block;margin-bottom:8px;color:#555b62;font-size:14px;font-weight:650}}
+  input{{
+    width:100%;
+    height:44px;
+    border:1px solid #d8d8d8;
+    border-radius:8px;
+    padding:0 12px;
+    font:inherit;
+    outline:none;
+  }}
+  input:focus{{border-color:#22aee8;box-shadow:0 0 0 3px rgba(34,174,232,.15)}}
+  button{{
+    width:100%;
+    height:44px;
+    margin-top:14px;
+    border:0;
+    border-radius:8px;
+    background:#22aee8;
+    color:#fff;
+    font:inherit;
+    font-weight:730;
+    cursor:pointer;
+  }}
+  .error{{
+    margin-bottom:14px;
+    padding:10px 12px;
+    border-radius:8px;
+    background:#fdecec;
+    color:#b42318;
+    font-size:14px;
+    font-weight:650;
+  }}
+</style>
+</head>
+<body>
+  <form class="card" method="post" action="/login">
+    <h1>Clover Revenue</h1>
+    <p>Enter the dashboard password.</p>
+    {error_markup}
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autofocus required />
+    <button type="submit">Open dashboard</button>
+  </form>
+</body>
+</html>"""
+
+
+async def login_page(request):
+    return web.Response(text=login_html(), content_type="text/html")
+
+
+async def login_submit(request):
+    form = await request.post()
+    password = str(form.get("password", ""))
+
+    if password != DASHBOARD_PASSWORD:
+        return web.Response(
+            text=login_html("Wrong password."),
+            content_type="text/html",
+            status=401,
+        )
+
+    response = web.HTTPFound("/")
+    response.set_cookie(
+        DASHBOARD_COOKIE_NAME,
+        DASHBOARD_COOKIE_VALUE,
+        httponly=True,
+        samesite="Lax",
+        max_age=60 * 60 * 24 * 30,
+    )
+    return response
+
+
 def serialize_report(row):
     return {
         "date": row["report_date"].isoformat(),
@@ -611,6 +723,9 @@ def summarize_reports(current_reports, previous_reports):
 
 
 async def revenue_api(request):
+    if not dashboard_is_authenticated(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+
     try:
         days = int(request.query.get("days", "14"))
     except ValueError:
@@ -648,6 +763,9 @@ async def revenue_api(request):
 
 
 async def dashboard_page(request):
+    if not dashboard_is_authenticated(request):
+        raise web.HTTPFound("/login")
+
     path = os.path.join(os.path.dirname(__file__), "dashboard.html")
     return web.FileResponse(path)
 
@@ -663,6 +781,8 @@ async def start_web_server():
 
     app = web.Application()
     app.router.add_get("/", dashboard_page)
+    app.router.add_get("/login", login_page)
+    app.router.add_post("/login", login_submit)
     app.router.add_get("/api/revenue", revenue_api)
     app.router.add_get("/health", healthcheck)
 
