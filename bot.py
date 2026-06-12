@@ -740,6 +740,7 @@ async def revenue_api(request):
             "days": days,
             "current": [],
             "previous": [],
+            "gamesCount": len(load_games()),
             "summary": summarize_reports([], []),
         })
 
@@ -758,6 +759,7 @@ async def revenue_api(request):
         "current": [serialize_report(item) for item in current_reports],
         "previous": [serialize_report(item) for item in previous_reports],
         "all": [serialize_report(item) for item in all_reports],
+        "gamesCount": len(load_games()),
         "summary": summarize_reports(current_reports, previous_reports),
     })
 
