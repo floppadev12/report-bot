@@ -42,6 +42,9 @@ INITIAL_DAILY_REPORTS = [
     (datetime.date(2026, 6, 7), 885),
     (datetime.date(2026, 6, 8), 570),
     (datetime.date(2026, 6, 9), 500),
+    (datetime.date(2026, 6, 10), 492),
+    (datetime.date(2026, 6, 11), 484),
+    (datetime.date(2026, 6, 12), 596),
 ]
 
 intents = discord.Intents.default()
