@@ -72,8 +72,94 @@
   #entries::-webkit-scrollbar-track{background:var(--card)}#entries::-webkit-scrollbar-thumb{border-color:var(--card)}
   .entry{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center;padding:16px 24px;border-bottom:1px solid var(--row)}
   .entry-date{font-size:15px;font-weight:700}.entry-source{margin-top:5px;color:var(--muted);font-size:13px}.entry-amount{font-size:19px;font-weight:760}
+  .mobile-tabs,.mobile-cta{display:none}
   @media(max-width:960px){.metrics{grid-template-columns:repeat(2,1fr)}.main{grid-template-columns:1fr}}
-  @media(max-width:640px){.page{width:calc(100vw - 24px);margin:22px auto}.topbar{align-items:flex-start;flex-direction:column}.actions{width:100%;justify-content:space-between}.metrics{grid-template-columns:1fr}.legend{left:24px;right:24px;bottom:22px;flex-wrap:wrap}}
+  @media(max-width:640px){
+    body{zoom:1;background:var(--card)}
+    .page{width:100%;margin:0;padding:14px 10px 18px;overflow:hidden}
+    .topbar,.metrics,.table-card,.chart-title,.chart-dots,.chart-growth,.legend,.tooltip{display:none}
+    .main{display:block}
+    .mobile-tabs{
+      display:flex;
+      align-items:center;
+      gap:8px;
+      width:100%;
+      overflow-x:auto;
+      padding:0 2px 16px;
+      scrollbar-width:none;
+    }
+    .mobile-tabs::-webkit-scrollbar{display:none}
+    .mobile-tab{
+      flex:0 0 auto;
+      border:0;
+      border-radius:4px;
+      background:transparent;
+      color:var(--text);
+      font:inherit;
+      font-size:15px;
+      padding:8px 12px;
+      cursor:pointer;
+      white-space:nowrap;
+    }
+    .mobile-tab.live{display:flex;align-items:center;gap:8px}
+    .mobile-tab.live::before{content:"";width:5px;height:5px;border-radius:999px;background:#d98575}
+    .mobile-tab.active{background:var(--soft-blue);color:#176f61}
+    .chart-card{
+      min-height:338px;
+      border:0;
+      border-radius:0;
+      box-shadow:none;
+      background:var(--card);
+      overflow:visible;
+    }
+    .chart-amount{
+      top:52px;
+      left:0;
+      right:0;
+      text-align:center;
+      font-size:27px;
+      letter-spacing:-.6px;
+    }
+    .chart-amount::before{
+      content:"Total sales";
+      display:block;
+      margin-bottom:6px;
+      color:var(--muted);
+      font-size:15px;
+      font-weight:500;
+      letter-spacing:0;
+    }
+    .chart-amount::after{
+      content:attr(data-orders);
+      display:block;
+      margin-top:7px;
+      color:var(--text);
+      font-size:14px;
+      font-weight:500;
+      letter-spacing:0;
+    }
+    .filter{display:none}
+    svg.chart{top:112px;height:186px}
+    .axis{font-size:20px}
+    #y3{display:none}
+    #x0,#x1,#x2,#x3{font-size:18px}
+    .marker{display:none}
+    .mobile-cta{
+      display:block;
+      width:100%;
+      margin-top:8px;
+      border:0;
+      border-radius:0;
+      background:rgba(34,174,232,.09);
+      color:#176f61;
+      padding:17px 14px;
+      font:inherit;
+      font-size:18px;
+      font-weight:760;
+      cursor:pointer;
+      text-align:center;
+    }
+  }
 </style>
 </head>
 <body>
@@ -88,6 +174,13 @@
       <div class="status"><span class="pulse"></span><span id="lastPost">Loading reports...</span></div>
     </div>
   </header>
+  <nav class="mobile-tabs" aria-label="Revenue range">
+    <button class="mobile-tab live" type="button" data-days="1">Live</button>
+    <button class="mobile-tab" type="button" data-days="1">Today</button>
+    <button class="mobile-tab active" type="button" data-days="1">Yesterday</button>
+    <button class="mobile-tab" type="button" data-days="7">This week</button>
+    <button class="mobile-tab" type="button" data-days="30">This month</button>
+  </nav>
   <section class="metrics">
     <article class="metric"><div class="metric-label">Total tracked</div><div class="metric-value" id="allTotal">$0</div><div class="metric-note" id="allNote">0 daily messages</div></article>
     <article class="metric"><div class="metric-label">Latest</div><div class="metric-value" id="latestAmount">$0</div><div class="metric-note" id="latestNote">No report yet</div></article>
@@ -109,6 +202,7 @@
       <div class="legend"><div class="legend-item"><span class="legend-line"></span><span id="currentLegend">Current 14 days</span></div><div class="legend-item"><span class="legend-dots"></span><span id="previousLegend">Previous period</span></div></div>
       <div class="tooltip" id="tooltip"><div class="tooltip-date" id="tooltipDate"></div><div class="tooltip-amount" id="tooltipAmount"></div></div>
     </article>
+    <button class="mobile-cta" type="button" id="mobileCta">View dashboard</button>
     <aside class="table-card"><div class="table-head"><h2 class="table-title">Recent entries</h2><p class="table-subtitle">Saved by the Discord bot.</p><span class="badge" id="project">Project Floppa</span></div><div id="entries"></div></aside>
   </section>
 </main>
@@ -124,11 +218,11 @@ function niceMax(v){return Math.max(100,Math.ceil((v*1.08)/100)*100)}
 function pts(items,max){const den=Math.max(1,items.length-1);return items.map((it,i)=>({x:items.length===1?plot.left+(plot.right-plot.left)/2:plot.left+(plot.right-plot.left)*(i/den),y:plot.bottom-(it.amount/max)*(plot.bottom-plot.top)}))}
 function path(points){if(!points.length)return "";if(points.length===1)return `M${points[0].x-1} ${points[0].y} L${points[0].x+1} ${points[0].y}`;let d=`M${points[0].x} ${points[0].y}`;for(let i=0;i<points.length-1;i++){const c=points[i],n=points[i+1],p=points[i-1]||c,a=points[i+2]||n;d+=` C${c.x+(n.x-p.x)/6} ${c.y+(n.y-p.y)/6},${n.x-(a.x-c.x)/6} ${n.y-(a.y-c.y)/6},${n.x} ${n.y}`}return d}
 function area(points){if(!points.length)return "";if(points.length===1)return `M${points[0].x-1} ${points[0].y} L${points[0].x+1} ${points[0].y} L${points[0].x+1} ${plot.bottom} L${points[0].x-1} ${plot.bottom} Z`;return `${path(points)} L${points[points.length-1].x} ${plot.bottom} L${points[0].x} ${plot.bottom} Z`}
-async function load(){const days=$("range").value;const res=await fetch(`/api/revenue?days=${days}`);const data=await res.json();current=data.current;previous=data.previous;maxValue=niceMax(Math.max(0,...current.map(x=>x.amount),...previous.map(x=>x.amount)));render(data)}
-function render(data){const p=pts(current,maxValue), pp=pts(previous,maxValue);$("linePath").setAttribute("d",path(p));$("areaPath").setAttribute("d",area(p));$("prevLine").setAttribute("d",path(pp));$("prevLine").style.opacity=pp.length?"1":"0";$("chartTotal").textContent=money(data.summary.total);$("growth").textContent=data.summary.growth===null?"New":Math.abs(data.summary.growth).toFixed(1)+"%";$("growth").style.color=data.summary.growth===null||data.summary.growth>=0?"var(--green)":"#d14b4b";$("average").textContent=money(data.summary.average);$("averageNote").textContent=data.summary.count+" entries selected";$("best").textContent=money(data.summary.best?.amount||0);$("bestNote").textContent=data.summary.best?shortDate(data.summary.best.date):"No report yet";$("project").textContent=data.project;$("currentLegend").textContent="Current "+data.days+(data.days==1?" day":" days");$("previousLegend").textContent=previous.length?"Previous period":"No prior period";$("y1").textContent=money(maxValue/3);$("y2").textContent=money(maxValue/3*2);$("y3").textContent=money(maxValue);const idx=current.length===1?[0,0,0,0]:[0,Math.floor((current.length-1)/3),Math.floor((current.length-1)/3*2),current.length-1];["x0","x1","x2","x3"].forEach((id,i)=>$(id).textContent=current[idx[i]]?shortDate(current[idx[i]].date):"");const all=data.all||[],allTotal=all.reduce((a,b)=>a+b.amount,0);$("allTotal").textContent=money(allTotal);$("allNote").textContent=all.length+" daily messages";const latest=all[all.length-1]||current[current.length-1];$("latestAmount").textContent=money(latest?.amount||0);$("latestNote").textContent=latest?shortDate(latest.date):"No report yet";$("lastPost").textContent=latest?"Last saved report: "+fullDate(latest.date):"No reports saved yet";$("entries").innerHTML=current.slice().reverse().map(x=>`<div class="entry"><div><div class="entry-date">${fullDate(x.date)}</div><div class="entry-source">Saved Discord report</div></div><div class="entry-amount">${money(x.amount)}</div></div>`).join("")}
+async function load(daysOverride){const days=daysOverride||$("range").value;$("range").value=String(days);const res=await fetch(`/api/revenue?days=${days}`);const data=await res.json();current=data.current;previous=data.previous;maxValue=niceMax(Math.max(0,...current.map(x=>x.amount),...previous.map(x=>x.amount)));render(data)}
+function render(data){const p=pts(current,maxValue), pp=pts(previous,maxValue);$("linePath").setAttribute("d",path(p));$("areaPath").setAttribute("d",area(p));$("prevLine").setAttribute("d",path(pp));$("prevLine").style.opacity=pp.length?"1":"0";$("chartTotal").textContent=money(data.summary.total);$("chartTotal").dataset.orders=data.summary.count+" orders";$("growth").textContent=data.summary.growth===null?"New":Math.abs(data.summary.growth).toFixed(1)+"%";$("growth").style.color=data.summary.growth===null||data.summary.growth>=0?"var(--green)":"#d14b4b";$("average").textContent=money(data.summary.average);$("averageNote").textContent=data.summary.count+" entries selected";$("best").textContent=money(data.summary.best?.amount||0);$("bestNote").textContent=data.summary.best?shortDate(data.summary.best.date):"No report yet";$("project").textContent=data.project;$("currentLegend").textContent="Current "+data.days+(data.days==1?" day":" days");$("previousLegend").textContent=previous.length?"Previous period":"No prior period";$("y1").textContent=money(maxValue/3);$("y2").textContent=money(maxValue/3*2);$("y3").textContent=money(maxValue);const idx=current.length===1?[0,0,0,0]:[0,Math.floor((current.length-1)/3),Math.floor((current.length-1)/3*2),current.length-1];["x0","x1","x2","x3"].forEach((id,i)=>$(id).textContent=current[idx[i]]?shortDate(current[idx[i]].date):"");const all=data.all||[],allTotal=all.reduce((a,b)=>a+b.amount,0);$("allTotal").textContent=money(allTotal);$("allNote").textContent=all.length+" daily messages";const latest=all[all.length-1]||current[current.length-1];$("latestAmount").textContent=money(latest?.amount||0);$("latestNote").textContent=latest?shortDate(latest.date):"No report yet";$("lastPost").textContent=latest?"Last saved report: "+fullDate(latest.date):"No reports saved yet";$("entries").innerHTML=current.slice().reverse().map(x=>`<div class="entry"><div><div class="entry-date">${fullDate(x.date)}</div><div class="entry-source">Saved Discord report</div></div><div class="entry-amount">${money(x.amount)}</div></div>`).join("")}
 function hover(e){if(!current.length)return;const r=$("chart").getBoundingClientRect(),x=(e.clientX-r.left)*(780/r.width),y=(e.clientY-r.top)*(520/r.height);if(x<plot.left||x>plot.right||y<plot.top||y>plot.bottom)return hide();const i=current.length===1?0:Math.max(0,Math.min(current.length-1,Math.round(((x-plot.left)/(plot.right-plot.left))*(current.length-1))));const point=pts(current,maxValue)[i],it=current[i];$("hoverLine").setAttribute("x1",point.x);$("hoverLine").setAttribute("x2",point.x);$("hoverDot").setAttribute("cx",point.x);$("hoverDot").setAttribute("cy",point.y);$("tooltipDate").textContent=fullDate(it.date);$("tooltipAmount").textContent=money(it.amount);$("tooltip").style.left=e.clientX+"px";$("tooltip").style.top=e.clientY+"px";$("tooltip").classList.add("show");$("chartCard").classList.add("hover")}
 function hide(){$("tooltip").classList.remove("show");$("chartCard").classList.remove("hover")}
-$("range").onchange=load;$("chart").onmousemove=hover;$("chart").onmouseleave=hide;load();
+$("range").onchange=()=>load();document.querySelectorAll(".mobile-tab").forEach(tab=>tab.onclick=()=>{document.querySelectorAll(".mobile-tab").forEach(t=>t.classList.remove("active"));tab.classList.add("active");load(tab.dataset.days)});$("mobileCta").onclick=()=>window.scrollTo({top:document.body.scrollHeight,behavior:"smooth"});$("chart").onmousemove=hover;$("chart").onmouseleave=hide;load();
 </script>
 </body>
 </html>
