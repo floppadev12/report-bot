@@ -22,6 +22,14 @@ DASHBOARD_COOKIE_NAME = "clover_dashboard_auth"
 DASHBOARD_COOKIE_VALUE = os.getenv("DASHBOARD_COOKIE_VALUE", "clover-dashboard-ok")
 
 PROJECT_NAME = "Project Floppa"
+TROPHY_EMOJI = "\N{TROPHY}"
+CHECK_EMOJI = "\N{WHITE HEAVY CHECK MARK}"
+CROSS_EMOJI = "\N{CROSS MARK}"
+ID_EMOJI = "\N{SQUARED ID}"
+MONEY_EMOJI = "\N{MONEY BAG}"
+TRASH_EMOJI = "\N{WASTEBASKET}"
+MEMO_EMOJI = "\N{MEMO}"
+CHART_EMOJI = "\N{BAR CHART}"
 REPORT_CHANNEL_ID = 1490317756136947942
 TIMEZONE = "Europe/Bratislava"
 USD_PER_ROBUX = 0.0038
@@ -261,7 +269,7 @@ def normalize_chart_label(label: str) -> str:
 def extract_title(page_html: str, universe_id: int) -> str:
     title_match = re.search(r"<title>(.*?)</title>", page_html, re.IGNORECASE | re.DOTALL)
     title = title_match.group(1).strip() if title_match else f"Game {universe_id}"
-    title = re.sub(r"\s*[-â€”]\s*RoRizz\s*$", "", title).strip()
+    title = re.sub("\\s*[-\N{EM DASH}]\\s*RoRizz\\s*$", "", title).strip()
     return html_lib.unescape(title)
 
 
@@ -422,7 +430,7 @@ class AddGameModal(discord.ui.Modal, title="Add RoRizz Game"):
 
         if not universe_id:
             await interaction.response.send_message(
-                "âŒ Invalid RoRizz link.",
+                f"{CROSS_EMOJI} Invalid RoRizz link.",
                 ephemeral=True,
             )
             return
@@ -431,7 +439,7 @@ class AddGameModal(discord.ui.Modal, title="Add RoRizz Game"):
             robux_per_visit_value = float(str(self.robux_per_visit).strip())
         except ValueError:
             await interaction.response.send_message(
-                "âŒ Robux per visit must be a number.",
+                f"{CROSS_EMOJI} Robux per visit must be a number.",
                 ephemeral=True,
             )
             return
@@ -443,7 +451,7 @@ class AddGameModal(discord.ui.Modal, title="Add RoRizz Game"):
 
         if not data:
             await interaction.followup.send(
-                "âŒ Could not fetch this game from RoRizz.",
+                f"{CROSS_EMOJI} Could not fetch this game from RoRizz.",
                 ephemeral=True,
             )
             return
@@ -451,9 +459,9 @@ class AddGameModal(discord.ui.Modal, title="Add RoRizz Game"):
         add_game_to_db(universe_id, link, robux_per_visit_value)
 
         await interaction.followup.send(
-            f"âœ… Added **{data['name']}**\n"
-            f"ðŸ†” `{universe_id}`\n"
-            f"ðŸ’° Robux per visit: `{robux_per_visit_value}`",
+            f"{CHECK_EMOJI} Added **{data['name']}**\n"
+            f"{ID_EMOJI} `{universe_id}`\n"
+            f"{MONEY_EMOJI} Robux per visit: `{robux_per_visit_value}`",
             ephemeral=True,
         )
 
@@ -489,7 +497,7 @@ class RemoveGameSelect(discord.ui.Select):
 
         universe_id = int(self.values[0])
         remove_game_by_universe_id(universe_id)
-        await interaction.response.send_message("ðŸ—‘ï¸ Game removed.", ephemeral=True)
+        await interaction.response.send_message(f"{TRASH_EMOJI} Game removed.", ephemeral=True)
 
 
 class RemoveGameView(discord.ui.View):
@@ -526,8 +534,8 @@ class PanelView(discord.ui.View):
         for i, g in enumerate(games, start=1):
             lines.append(
                 f"**{i}.** {g['game_link']}\n"
-                f"ðŸ†” `{g['universe_id']}`\n"
-                f"ðŸ’° Robux per visit: `{g['robux_per_visit']}`"
+                f"{ID_EMOJI} `{g['universe_id']}`\n"
+                f"{MONEY_EMOJI} Robux per visit: `{g['robux_per_visit']}`"
             )
 
         await interaction.response.send_message("\n\n".join(lines)[:1900], ephemeral=True)
@@ -570,13 +578,13 @@ async def build_daily_earned_message_from_chart():
         return None, None
 
     rounded_usd = int(round(total_usd))
-    return f"ðŸ† {PROJECT_NAME} just earned ${rounded_usd:,}", rounded_usd
+    return f"{TROPHY_EMOJI} {PROJECT_NAME} just earned ${rounded_usd:,}", rounded_usd
 
 
 async def build_previous_day_breakdown_from_chart():
     games = load_games()
     if not games:
-        return "ðŸ“­ No tracked games added yet. Work harder."
+        return f"{MEMO_EMOJI} No tracked games added yet. Work harder."
 
     today = now_local().date()
     yesterday = today - datetime.timedelta(days=1)
@@ -593,11 +601,11 @@ async def build_previous_day_breakdown_from_chart():
             game_name = data["name"] if data and data.get("name") else f"Game {game['universe_id']}"
 
             if not data:
-                lines.append(f"â€¢ **{game_name}**: could not fetch data")
+                lines.append(f"- **{game_name}**: could not fetch data")
                 continue
 
             if not data["visits_chart"]:
-                lines.append(f"â€¢ **{game_name}**: could not find Visits (30d) chart data")
+                lines.append(f"- **{game_name}**: could not find Visits (30d) chart data")
                 continue
 
             yesterday_visits = get_chart_value_for_day(data["visits_chart"], yesterday)
@@ -605,7 +613,7 @@ async def build_previous_day_breakdown_from_chart():
 
             if yesterday_visits is None or previous_visits is None:
                 lines.append(
-                    f"â€¢ **{game_name}**: could not read chart values for {previous_day} or {yesterday}"
+                    f"- **{game_name}**: could not read chart values for {previous_day} or {yesterday}"
                 )
                 continue
 
@@ -618,15 +626,15 @@ async def build_previous_day_breakdown_from_chart():
             total_usd += earned_usd
 
             lines.append(
-                f"â€¢ **{game_name}** | +{diff:,} visits | {earned_robux:,} robux | ${earned_usd:,.2f}"
+                f"- **{game_name}** | +{diff:,} visits | {earned_robux:,} robux | ${earned_usd:,.2f}"
             )
 
     header = (
-        f"ðŸ“Š **Yesterday breakdown**\n"
-        f"**{previous_day} â†’ {yesterday}**\n\n"
-        f"â€¢ Total visits: **{total_visits:,}**\n"
-        f"â€¢ Total robux: **{total_robux:,}**\n"
-        f"â€¢ Total USD: **${total_usd:,.2f}**\n\n"
+        f"{CHART_EMOJI} **Yesterday breakdown**\n"
+        f"**{previous_day} -> {yesterday}**\n\n"
+        f"- Total visits: **{total_visits:,}**\n"
+        f"- Total robux: **{total_robux:,}**\n"
+        f"- Total USD: **${total_usd:,.2f}**\n\n"
         f"**Per game**\n"
     )
 
@@ -852,8 +860,8 @@ async def panel(interaction: discord.Interaction):
         description=(
             "Add or remove tracked RoRizz games.\n\n"
             "For each game, enter:\n"
-            "â€¢ RoRizz link\n"
-            "â€¢ Robux per visit"
+            "- RoRizz link\n"
+            "- Robux per visit"
         ),
         color=EMBED_COLOR,
     )
@@ -862,7 +870,7 @@ async def panel(interaction: discord.Interaction):
 
 @bot.tree.command(name="ping", description="Test bot")
 async def ping(interaction: discord.Interaction):
-    await interaction.response.send_message("âœ… Bot is working!")
+    await interaction.response.send_message(f"{CHECK_EMOJI} Bot is working!")
 
 
 @bot.tree.command(name="reportnow", description="Preview today's earnings message")
@@ -872,14 +880,14 @@ async def reportnow(interaction: discord.Interaction):
     try:
         msg, usd_amount = await build_daily_earned_message_from_chart()
         if not msg or usd_amount is None:
-            await interaction.followup.send("âš ï¸ Could not build today's earnings message.", ephemeral=True)
+            await interaction.followup.send("Warning: Could not build today's earnings message.", ephemeral=True)
             return
 
         report_date = now_local().date()
         save_daily_report(report_date, usd_amount, msg)
         await interaction.followup.send(msg, ephemeral=True)
     except Exception as e:
-        await interaction.followup.send(f"âŒ Failed: `{e}`", ephemeral=True)
+        await interaction.followup.send(f"{CROSS_EMOJI} Failed: `{e}`", ephemeral=True)
 
 
 @bot.tree.command(name="prev", description="Show yesterday vs previous day earnings breakdown")
@@ -890,7 +898,7 @@ async def prev(interaction: discord.Interaction):
         msg = await build_previous_day_breakdown_from_chart()
         await interaction.followup.send(msg[:1900], ephemeral=True)
     except Exception as e:
-        await interaction.followup.send(f"âŒ Failed: `{e}`", ephemeral=True)
+        await interaction.followup.send(f"{CROSS_EMOJI} Failed: `{e}`", ephemeral=True)
 
 
 # ---------------- DAILY TASK ----------------
