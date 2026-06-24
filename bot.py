@@ -367,6 +367,54 @@ def get_chart_value_for_day(points, day: datetime.date):
     return None
 
 
+def numeric_chart_values(points):
+    values = []
+
+    if not points:
+        return values
+
+    for point in points:
+        if not isinstance(point, dict):
+            continue
+
+        value = point.get("value")
+
+        if isinstance(value, (int, float)):
+            values.append(int(value))
+            continue
+
+        try:
+            values.append(int(str(value).replace(",", "")))
+        except Exception:
+            continue
+
+    return values
+
+
+def chart_looks_cumulative(points) -> bool:
+    values = numeric_chart_values(points)
+    if len(values) < 3:
+        return True
+
+    increases = sum(1 for prev, current in zip(values, values[1:]) if current >= prev)
+    return increases / (len(values) - 1) >= 0.9
+
+
+def get_daily_visits_for_day(points, day: datetime.date, previous_day: datetime.date):
+    day_value = get_chart_value_for_day(points, day)
+    if day_value is None:
+        return None
+
+    if not chart_looks_cumulative(points):
+        return max(0, day_value)
+
+    previous_value = get_chart_value_for_day(points, previous_day)
+    if previous_value is None:
+        return None
+
+    return max(0, day_value - previous_value)
+
+
 async def fetch_rorizz_chart_data(session: aiohttp.ClientSession, universe_id: int):
     url = f"https://rorizz.com/g/{universe_id}"
 
@@ -561,13 +609,11 @@ async def build_daily_earned_message_from_chart():
             if not data or not data["visits_chart"]:
                 continue
 
-            yesterday_visits = get_chart_value_for_day(data["visits_chart"], yesterday)
-            previous_visits = get_chart_value_for_day(data["visits_chart"], previous_day)
+            diff = get_daily_visits_for_day(data["visits_chart"], yesterday, previous_day)
 
-            if yesterday_visits is None or previous_visits is None:
+            if diff is None:
                 continue
 
-            diff = max(0, yesterday_visits - previous_visits)
             earned_robux = diff * game["robux_per_visit"]
             earned_usd = earned_robux * USD_PER_ROBUX
 
@@ -608,16 +654,14 @@ async def build_previous_day_breakdown_from_chart():
                 lines.append(f"- **{game_name}**: could not find Visits (30d) chart data")
                 continue
 
-            yesterday_visits = get_chart_value_for_day(data["visits_chart"], yesterday)
-            previous_visits = get_chart_value_for_day(data["visits_chart"], previous_day)
+            diff = get_daily_visits_for_day(data["visits_chart"], yesterday, previous_day)
 
-            if yesterday_visits is None or previous_visits is None:
+            if diff is None:
                 lines.append(
                     f"- **{game_name}**: could not read chart values for {previous_day} or {yesterday}"
                 )
                 continue
 
-            diff = max(0, yesterday_visits - previous_visits)
             earned_robux = int(round(diff * game["robux_per_visit"]))
             earned_usd = earned_robux * USD_PER_ROBUX
 
