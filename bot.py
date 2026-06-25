@@ -89,6 +89,15 @@ def init_db():
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
         """)
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS visit_snapshots (
+            snapshot_date DATE NOT NULL,
+            universe_id BIGINT NOT NULL,
+            visits BIGINT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (snapshot_date, universe_id)
+        );
+        """)
 
 
 def seed_daily_reports():
@@ -139,6 +148,36 @@ def add_game_to_db(universe_id: int, game_link: str, robux_per_visit: float):
 def remove_game_by_universe_id(universe_id: int):
     with get_conn().cursor() as cur:
         cur.execute("DELETE FROM games WHERE universe_id = %s", (universe_id,))
+
+
+def save_visit_snapshot(snapshot_date: datetime.date, universe_id: int, visits: int):
+    with get_conn().cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO visit_snapshots (snapshot_date, universe_id, visits)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (snapshot_date, universe_id)
+            DO UPDATE SET
+                visits = EXCLUDED.visits,
+                created_at = NOW()
+            """,
+            (snapshot_date, universe_id, visits),
+        )
+
+
+def load_visit_snapshot(snapshot_date: datetime.date, universe_id: int):
+    with get_conn().cursor() as cur:
+        cur.execute(
+            """
+            SELECT visits
+            FROM visit_snapshots
+            WHERE snapshot_date = %s AND universe_id = %s
+            """,
+            (snapshot_date, universe_id),
+        )
+        row = cur.fetchone()
+
+    return int(row[0]) if row else None
 
 
 def save_daily_report(report_date: datetime.date, usd_amount: int, message_text: str | None = None):
@@ -230,6 +269,15 @@ def load_recent_daily_reports(limit: int, before_date: datetime.date | None = No
 
 def extract_rorizz_universe_id(link: str):
     match = re.search(r"rorizz\.com/g/(\d+)", link)
+    return int(match.group(1)) if match else None
+
+
+def extract_roblox_place_id(link: str):
+    match = re.search(r"roblox\.com/games/(\d+)", link)
+    if match:
+        return int(match.group(1))
+
+    match = re.search(r"[?&]placeId=(\d+)", link)
     return int(match.group(1)) if match else None
 
 
@@ -457,12 +505,57 @@ async def fetch_rorizz_chart_data(session: aiohttp.ClientSession, universe_id: i
         return None
 
 
+async def resolve_roblox_universe_id(session: aiohttp.ClientSession, game_link: str):
+    place_id = extract_roblox_place_id(game_link)
+    if not place_id:
+        return None
+
+    url = f"https://apis.roblox.com/universes/v1/places/{place_id}/universe"
+
+    try:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+            if resp.status != 200:
+                print(f"Roblox universe lookup failed for place {place_id}: HTTP {resp.status}")
+                return None
+            data = await resp.json()
+    except Exception as e:
+        print(f"Roblox universe lookup error for place {place_id}: {e}")
+        return None
+
+    universe_id = data.get("universeId")
+    return int(universe_id) if universe_id else None
+
+
+async def fetch_roblox_game_data(session: aiohttp.ClientSession, universe_id: int):
+    url = f"https://games.roblox.com/v1/games?universeIds={universe_id}"
+
+    try:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+            if resp.status != 200:
+                print(f"Roblox game lookup failed for {universe_id}: HTTP {resp.status}")
+                return None
+            payload = await resp.json()
+    except Exception as e:
+        print(f"Roblox game lookup error for {universe_id}: {e}")
+        return None
+
+    details = (payload.get("data") or [None])[0]
+    if not details:
+        return None
+
+    return {
+        "name": str(details.get("name") or f"Game {universe_id}"),
+        "visits": int(details.get("visits") or 0),
+        "playing": int(details.get("playing") or 0),
+    }
+
+
 # ---------------- PANEL UI ----------------
 
-class AddGameModal(discord.ui.Modal, title="Add RoRizz Game"):
+class AddGameModal(discord.ui.Modal, title="Add Roblox Game"):
     game_link = discord.ui.TextInput(
-        label="RoRizz game link",
-        placeholder="https://rorizz.com/g/9358783717/your-game",
+        label="Roblox game link",
+        placeholder="https://www.roblox.com/games/123456789/Game-Name",
         max_length=300,
     )
 
@@ -474,14 +567,6 @@ class AddGameModal(discord.ui.Modal, title="Add RoRizz Game"):
 
     async def on_submit(self, interaction: discord.Interaction):
         link = str(self.game_link).strip()
-        universe_id = extract_rorizz_universe_id(link)
-
-        if not universe_id:
-            await interaction.response.send_message(
-                f"{CROSS_EMOJI} Invalid RoRizz link.",
-                ephemeral=True,
-            )
-            return
 
         try:
             robux_per_visit_value = float(str(self.robux_per_visit).strip())
@@ -495,11 +580,18 @@ class AddGameModal(discord.ui.Modal, title="Add RoRizz Game"):
         await interaction.response.defer(ephemeral=True)
 
         async with aiohttp.ClientSession() as session:
-            data = await fetch_rorizz_chart_data(session, universe_id)
+            universe_id = await resolve_roblox_universe_id(session, link)
+            if not universe_id:
+                await interaction.followup.send(
+                    f"{CROSS_EMOJI} Invalid Roblox game link.",
+                    ephemeral=True,
+                )
+                return
+            data = await fetch_roblox_game_data(session, universe_id)
 
         if not data:
             await interaction.followup.send(
-                f"{CROSS_EMOJI} Could not fetch this game from RoRizz.",
+                f"{CROSS_EMOJI} Could not fetch this game from Roblox.",
                 ephemeral=True,
             )
             return
@@ -591,29 +683,30 @@ class PanelView(discord.ui.View):
 
 # ---------------- REPORT LOGIC ----------------
 
-async def build_daily_earned_message_from_chart():
+async def build_daily_earned_message_from_roblox():
     games = load_games()
     if not games:
         return None, None
 
-    today = now_local().date()
-    yesterday = today - datetime.timedelta(days=1)
-    previous_day = today - datetime.timedelta(days=2)
+    report_date = now_local().date()
+    previous_date = report_date - datetime.timedelta(days=1)
 
     total_usd = 0.0
     found_any = False
 
     async with aiohttp.ClientSession() as session:
         for game in games:
-            data = await fetch_rorizz_chart_data(session, game["universe_id"])
-            if not data or not data["visits_chart"]:
+            data = await fetch_roblox_game_data(session, game["universe_id"])
+            if not data:
                 continue
 
-            diff = get_daily_visits_for_day(data["visits_chart"], yesterday, previous_day)
-
-            if diff is None:
+            current_visits = int(data["visits"])
+            save_visit_snapshot(report_date, game["universe_id"], current_visits)
+            previous_visits = load_visit_snapshot(previous_date, game["universe_id"])
+            if previous_visits is None:
                 continue
 
+            diff = max(0, current_visits - previous_visits)
             earned_robux = diff * game["robux_per_visit"]
             earned_usd = earned_robux * USD_PER_ROBUX
 
@@ -627,14 +720,13 @@ async def build_daily_earned_message_from_chart():
     return f"{TROPHY_EMOJI} {PROJECT_NAME} just earned ${rounded_usd:,}", rounded_usd
 
 
-async def build_previous_day_breakdown_from_chart():
+async def build_previous_day_breakdown_from_roblox():
     games = load_games()
     if not games:
         return f"{MEMO_EMOJI} No tracked games added yet. Work harder."
 
-    today = now_local().date()
-    yesterday = today - datetime.timedelta(days=1)
-    previous_day = today - datetime.timedelta(days=2)
+    report_date = now_local().date()
+    previous_date = report_date - datetime.timedelta(days=1)
 
     total_visits = 0
     total_robux = 0
@@ -643,25 +735,23 @@ async def build_previous_day_breakdown_from_chart():
 
     async with aiohttp.ClientSession() as session:
         for game in games:
-            data = await fetch_rorizz_chart_data(session, game["universe_id"])
+            data = await fetch_roblox_game_data(session, game["universe_id"])
             game_name = data["name"] if data and data.get("name") else f"Game {game['universe_id']}"
 
             if not data:
                 lines.append(f"- **{game_name}**: could not fetch data")
                 continue
 
-            if not data["visits_chart"]:
-                lines.append(f"- **{game_name}**: could not find Visits (30d) chart data")
-                continue
-
-            diff = get_daily_visits_for_day(data["visits_chart"], yesterday, previous_day)
-
-            if diff is None:
+            current_visits = int(data["visits"])
+            save_visit_snapshot(report_date, game["universe_id"], current_visits)
+            previous_visits = load_visit_snapshot(previous_date, game["universe_id"])
+            if previous_visits is None:
                 lines.append(
-                    f"- **{game_name}**: could not read chart values for {previous_day} or {yesterday}"
+                    f"- **{game_name}**: saved baseline at {current_visits:,} visits; no {previous_date} snapshot yet"
                 )
                 continue
 
+            diff = max(0, current_visits - previous_visits)
             earned_robux = int(round(diff * game["robux_per_visit"]))
             earned_usd = earned_robux * USD_PER_ROBUX
 
@@ -674,8 +764,8 @@ async def build_previous_day_breakdown_from_chart():
             )
 
     header = (
-        f"{CHART_EMOJI} **Yesterday breakdown**\n"
-        f"**{previous_day} -> {yesterday}**\n\n"
+        f"{CHART_EMOJI} **8:30 Roblox visits breakdown**\n"
+        f"**{previous_date} 08:30 -> {report_date} 08:30**\n\n"
         f"- Total visits: **{total_visits:,}**\n"
         f"- Total robux: **{total_robux:,}**\n"
         f"- Total USD: **${total_usd:,.2f}**\n\n"
@@ -900,11 +990,11 @@ async def start_web_server():
 @bot.tree.command(name="panel", description="Open control panel")
 async def panel(interaction: discord.Interaction):
     embed = discord.Embed(
-        title="RoRizz Report Control Panel",
+        title="Roblox Report Control Panel",
         description=(
-            "Add or remove tracked RoRizz games.\n\n"
+            "Add or remove tracked Roblox games.\n\n"
             "For each game, enter:\n"
-            "- RoRizz link\n"
+            "- Roblox game link\n"
             "- Robux per visit"
         ),
         color=EMBED_COLOR,
@@ -922,7 +1012,7 @@ async def reportnow(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
     try:
-        msg, usd_amount = await build_daily_earned_message_from_chart()
+        msg, usd_amount = await build_daily_earned_message_from_roblox()
         if not msg or usd_amount is None:
             await interaction.followup.send("Warning: Could not build today's earnings message.", ephemeral=True)
             return
@@ -934,12 +1024,12 @@ async def reportnow(interaction: discord.Interaction):
         await interaction.followup.send(f"{CROSS_EMOJI} Failed: `{e}`", ephemeral=True)
 
 
-@bot.tree.command(name="prev", description="Show yesterday vs previous day earnings breakdown")
+@bot.tree.command(name="prev", description="Show latest 8:30 Roblox visits earnings breakdown")
 async def prev(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
     try:
-        msg = await build_previous_day_breakdown_from_chart()
+        msg = await build_previous_day_breakdown_from_roblox()
         await interaction.followup.send(msg[:1900], ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"{CROSS_EMOJI} Failed: `{e}`", ephemeral=True)
@@ -955,7 +1045,7 @@ async def daily_report():
         return
 
     try:
-        msg, usd_amount = await build_daily_earned_message_from_chart()
+        msg, usd_amount = await build_daily_earned_message_from_roblox()
         if not msg or usd_amount is None:
             print("Daily report could not be built.")
             return
